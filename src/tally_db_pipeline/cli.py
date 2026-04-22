@@ -230,7 +230,7 @@ def sync_vouchers_command(
     voucher_type: str = typer.Option(..., help="Base voucher type, for example Sales, Purchase, Receipt, Payment."),
     from_date: Optional[str] = typer.Option(default=None, help="Inclusive start date in YYYY-MM-DD format."),
     to_date: Optional[str] = typer.Option(default=None, help="Inclusive end date in YYYY-MM-DD format."),
-    range_mode: str = typer.Option("daybook", help="Range export strategy for dated voucher pulls: daybook or collection."),
+    range_mode: str = typer.Option("daybook", help="Range export strategy for dated voucher pulls: daybook, collection, or auto."),
 ) -> None:
     init_db()
     with _tally_client() as client, get_session() as session:
@@ -258,7 +258,7 @@ def sync_vouchers_chunked_command(
     continue_on_error: bool = typer.Option(False, help="Continue even if one date window fails."),
     adaptive: bool = typer.Option(True, help="Automatically split failed date windows into smaller windows."),
     min_chunk_days: int = typer.Option(1, help="Smallest window size to try when adaptive splitting is enabled."),
-    range_mode: str = typer.Option("daybook", help="Range export strategy for dated voucher pulls: daybook or collection."),
+    range_mode: str = typer.Option("daybook", help="Range export strategy for dated voucher pulls: daybook, collection, or auto."),
 ) -> None:
     init_db()
     with _tally_client() as client, get_session() as session:
@@ -292,7 +292,7 @@ def sync_vouchers_incremental_command(
     continue_on_error: bool = typer.Option(False, help="Continue even if one date window fails."),
     adaptive: bool = typer.Option(True, help="Automatically split failed date windows into smaller windows."),
     min_chunk_days: int = typer.Option(1, help="Smallest window size to try when adaptive splitting is enabled."),
-    range_mode: str = typer.Option("daybook", help="Range export strategy for dated voucher pulls: daybook or collection."),
+    range_mode: str = typer.Option("daybook", help="Range export strategy for dated voucher pulls: daybook, collection, or auto."),
 ) -> None:
     init_db()
     with _tally_client() as client, get_session() as session:

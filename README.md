@@ -433,10 +433,17 @@ tally-db-pipeline sync-vouchers --company "Shanke Pvt Ltd - 2025-26" --voucher-t
 
 For dated voucher pulls, you can choose the range strategy explicitly:
 
-- `--range-mode daybook`
+- `--range-mode daybook` (default)
   - uses Day Book export with date variables
 - `--range-mode collection`
   - uses a voucher-type collection export with date variables
+- `--range-mode auto`
+  - tries `daybook` first, then retries with `collection` only if Tally returns out-of-range voucher dates
+
+Current recommendation:
+
+- keep the default `daybook` mode unless you are actively testing a customer install that needs `collection` or `auto`
+- on our live Tally, `daybook` fails fast and correctly for invalid historical windows, while `collection` is much slower and can stall
 
 Example:
 

@@ -45,7 +45,7 @@ This file is intentionally adversarial. Items stay here until the repo can eithe
   - Remaining gaps:
     - chunk sizing starts static but now supports adaptive window splitting on failure
     - no response-size-aware tuning yet
-    - collection-based range mode now exists as an operator-selectable alternative, but it still needs broader live validation
+    - collection-based range mode and auto fallback now exist, but they still need broader live validation before becoming safe defaults
 
 - XML-safe request construction.
   - Current state: dynamic XML values are now escaped before sending requests.
@@ -59,7 +59,7 @@ This file is intentionally adversarial. Items stay here until the repo can eithe
 - Date-range correctness for voucher exports.
   - Current state: profiled/chunked voucher commands now validate that returned voucher dates actually stay inside the requested window.
   - Remaining gaps:
-    - still need stronger live evidence on when `daybook` vs `collection` range mode is the safer choice
+    - still need stronger live evidence on when `daybook`, `collection`, or `auto` is the safer choice on other Tally datasets
 
 - Accidental local concurrency.
   - Current state: Tally-facing CLI commands use a local lock file to prevent overlapping commands from the same machine.
@@ -140,7 +140,7 @@ This file is intentionally adversarial. Items stay here until the repo can eithe
 
 ## Immediate next implementation targets
 
-1. Live-validate `collection` range mode on more Tally datasets and decide fallback strategy.
+1. Live-validate `collection` and `auto` range modes on more Tally datasets before changing defaults.
 2. Add replay-based regression scripts over saved XML exports.
 3. Add richer discovery/profile commands for voucher families in use.
 4. Tighten upgrade cleanup for legacy blank-company master rows.
