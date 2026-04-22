@@ -433,17 +433,17 @@ tally-db-pipeline sync-vouchers --company "Shanke Pvt Ltd - 2025-26" --voucher-t
 
 For dated voucher pulls, you can choose the range strategy explicitly:
 
-- `--range-mode daybook` (default)
+- `--range-mode collection` (default)
+  - uses a voucher collection narrowed by `SVFROMDATE` / `SVTODATE`
+  - this is now the recommended historical voucher path
+- `--range-mode daybook`
   - uses Day Book export with date variables
-- `--range-mode collection`
-  - uses a voucher-type collection export with date variables
-- `--range-mode auto`
-  - tries `daybook` first, then retries with `collection` only if Tally returns out-of-range voucher dates
+  - keep this only as a fallback/debug path on installs where collection mode behaves differently
 
 Current recommendation:
 
-- keep the default `daybook` mode unless you are actively testing a customer install that needs `collection` or `auto`
-- on our live Tally, `daybook` fails fast and correctly for invalid historical windows, while `collection` is much slower and can stall
+- keep the default `collection` mode for historical voucher sync
+- on our live Tally, this path correctly returned the full April Sales range, while the Day Book path under-fetched badly
 
 Example:
 
@@ -507,7 +507,7 @@ For larger profiling ranges, use the chunked profiler:
 tally-db-pipeline profile-vouchers-chunked --company "Shanke Pvt Ltd - 2025-26" --from-date 2025-04-01 --to-date 2026-03-31 --chunk-days 31
 ```
 
-If a chunked or profiled command fails with an out-of-range date-window error, do not trust historical or incremental voucher sync on that Tally instance yet. That means Tally is not honoring the requested range reliably enough for safe chunking.
+If a chunked or profiled command fails with an out-of-range date-window error, do not trust historical or incremental voucher sync on that Tally instance yet. That means the chosen extraction path is not honoring the requested range reliably enough.
 
 If the customer uses a mix of standard and non-standard voucher families, sync whatever the profiler actually finds:
 

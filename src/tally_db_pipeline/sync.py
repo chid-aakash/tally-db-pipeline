@@ -370,6 +370,53 @@ def _validate_voucher_dates_within_range(vouchers: list[dict], from_date: str | 
         )
 
 
+def _fetch_vouchers_for_range(
+    client: TallyClient,
+    *,
+    company_name: str,
+    voucher_type: str | None = None,
+    from_date: str,
+    to_date: str,
+    range_mode: str,
+) -> dict:
+    if range_mode == "collection":
+        if voucher_type:
+            payload = client.execute(
+                "vouchers_collection_range",
+                client.build_voucher_type_collection_range_xml(
+                    company_name,
+                    voucher_type=voucher_type,
+                    from_date=from_date,
+                    to_date=to_date,
+                    full_fetch=True,
+                ),
+            )
+        else:
+            payload = client.execute(
+                "voucher_profile_collection_range",
+                client.build_voucher_collection_range_xml(
+                    company_name,
+                    from_date=from_date,
+                    to_date=to_date,
+                    full_fetch=False,
+                ),
+            )
+    elif range_mode == "daybook":
+        payload = client.execute(
+            "vouchers_daybook" if voucher_type else "voucher_profile_daybook",
+            client.build_daybook_xml(company_name, voucher_type=voucher_type, from_date=from_date, to_date=to_date),
+        )
+    else:
+        raise ValueError("range_mode must be either 'collection' or 'daybook'.")
+
+    line_error = client.extract_line_error(payload["response_xml"])
+    if line_error:
+        raise RuntimeError(line_error)
+    vouchers = parse_vouchers(payload["response_xml"])
+    _validate_voucher_dates_within_range(vouchers, from_date, to_date)
+    return {"payload": payload, "vouchers": vouchers}
+
+
 def _get_checkpoint(session: Session, *, entity_type: str, company_name: str | None) -> SyncCheckpoint | None:
     normalized_company = company_name or ""
     return session.scalar(
@@ -895,10 +942,10 @@ def sync_vouchers(
     voucher_type: str,
     from_date: str | None = None,
     to_date: str | None = None,
-    range_mode: str = "daybook",
+    range_mode: str = "collection",
 ) -> dict:
-    if range_mode not in {"auto", "daybook", "collection"}:
-        raise ValueError("range_mode must be one of 'auto', 'daybook', or 'collection'.")
+    if range_mode not in {"daybook", "collection"}:
+        raise ValueError("range_mode must be either 'daybook' or 'collection'.")
     run_label = f"vouchers:{voucher_type}"
     if from_date or to_date:
         run_label += ":range"
@@ -907,47 +954,17 @@ def sync_vouchers(
         voucher_type_rows = _load_voucher_type_rows(session, company_name)
         effective_range_mode = range_mode
         if from_date or to_date:
-            candidate_modes = ["daybook", "collection"] if range_mode == "auto" else [range_mode]
-            last_range_error: Exception | None = None
-            payload = None
-            vouchers = None
-            for candidate_mode in candidate_modes:
-                effective_range_mode = candidate_mode
-                if candidate_mode == "collection":
-                    candidate_payload = client.execute(
-                        "vouchers_collection_range",
-                        client.build_voucher_type_collection_range_xml(
-                            company_name,
-                            voucher_type=voucher_type,
-                            from_date=from_date,
-                            to_date=to_date,
-                        ),
-                    )
-                else:
-                    candidate_payload = client.execute(
-                        "vouchers_daybook",
-                        client.build_daybook_xml(company_name, voucher_type=voucher_type, from_date=from_date, to_date=to_date),
-                    )
-
-                _record_payload(session, run, candidate_payload, company_name=company_name)
-                line_error = client.extract_line_error(candidate_payload["response_xml"])
-                if line_error:
-                    raise RuntimeError(line_error)
-
-                candidate_vouchers = parse_vouchers(candidate_payload["response_xml"])
-                try:
-                    _validate_voucher_dates_within_range(candidate_vouchers, from_date, to_date)
-                except VoucherRangeValidationError as exc:
-                    last_range_error = exc
-                    if range_mode == "auto" and candidate_mode == "daybook":
-                        continue
-                    raise
-                payload = candidate_payload
-                vouchers = candidate_vouchers
-                break
-
-            if payload is None or vouchers is None:
-                raise last_range_error or RuntimeError("No voucher payload could be validated.")
+            result = _fetch_vouchers_for_range(
+                client,
+                company_name=company_name,
+                voucher_type=voucher_type,
+                from_date=from_date,
+                to_date=to_date,
+                range_mode=range_mode,
+            )
+            payload = result["payload"]
+            vouchers = result["vouchers"]
+            _record_payload(session, run, payload, company_name=company_name)
         else:
             payload = client.execute("vouchers", client.build_voucher_collection_xml(company_name, voucher_type))
             effective_range_mode = "full"
@@ -1065,7 +1082,7 @@ def sync_vouchers_in_chunks(
     continue_on_error: bool = False,
     adaptive: bool = True,
     min_chunk_days: int = 1,
-    range_mode: str = "daybook",
+    range_mode: str = "collection",
 ) -> list[dict]:
     results: list[dict] = []
     for from_date, to_date in _iter_date_windows(start_date, end_date, chunk_days):
@@ -1144,7 +1161,7 @@ def sync_vouchers_incremental(
     continue_on_error: bool = False,
     adaptive: bool = True,
     min_chunk_days: int = 1,
-    range_mode: str = "daybook",
+    range_mode: str = "collection",
 ) -> list[dict]:
     checkpoint = _get_checkpoint(session, entity_type=f"vouchers:{voucher_type}", company_name=company_name)
     start_date = since_date
@@ -1182,18 +1199,18 @@ def profile_vouchers(
 ) -> dict:
     run = _start_run(session, "voucher_profile", company_name=company_name)
     try:
-        payload = client.execute(
-            "voucher_profile_daybook",
-            client.build_daybook_xml(company_name, from_date=from_date, to_date=to_date),
+        result = _fetch_vouchers_for_range(
+            client,
+            company_name=company_name,
+            voucher_type=None,
+            from_date=from_date,
+            to_date=to_date,
+            range_mode="collection",
         )
+        payload = result["payload"]
         _record_payload(session, run, payload, company_name=company_name)
-        line_error = client.extract_line_error(payload["response_xml"])
-        if line_error:
-            raise RuntimeError(line_error)
-
         voucher_type_rows = _load_voucher_type_rows(session, company_name)
-        vouchers = parse_vouchers(payload["response_xml"])
-        _validate_voucher_dates_within_range(vouchers, from_date, to_date)
+        vouchers = result["vouchers"]
         by_type: dict[str, dict] = {}
         for row in vouchers:
             name = row["voucher_type_name"] or "unknown"

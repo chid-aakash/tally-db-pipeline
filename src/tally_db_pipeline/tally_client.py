@@ -338,6 +338,7 @@ class TallyClient:
         *,
         from_date: str | None = None,
         to_date: str | None = None,
+        full_fetch: bool = True,
     ) -> str:
         if from_date and not to_date:
             to_date = from_date
@@ -355,6 +356,7 @@ class TallyClient:
 
         collection_name = "RangeVouchers"
         childof_expr = _voucher_childof_expression(voucher_type)
+        fetch = "*, ALLLEDGERENTRIES.*, ALLINVENTORYENTRIES.*" if full_fetch else "Date, VoucherNumber, PartyLedgerName, PartyName, VoucherTypeName, GUID"
         return (
             "<ENVELOPE>"
             "<HEADER>"
@@ -370,7 +372,51 @@ class TallyClient:
             "<TYPE>Vouchers : VoucherType</TYPE>"
             f"<CHILDOF>{_xml(childof_expr)}</CHILDOF>"
             "<BELONGSTO>Yes</BELONGSTO>"
-            "<FETCH>*, ALLLEDGERENTRIES, ALLINVENTORYENTRIES</FETCH>"
+            f"<FETCH>{fetch}</FETCH>"
+            "</COLLECTION>"
+            "</TDLMESSAGE></TDL>"
+            "</DESC></BODY>"
+            "</ENVELOPE>"
+        )
+
+    @staticmethod
+    def build_voucher_collection_range_xml(
+        company: str,
+        *,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        full_fetch: bool = False,
+    ) -> str:
+        if from_date and not to_date:
+            to_date = from_date
+        if to_date and not from_date:
+            from_date = to_date
+
+        static_variables = [
+            f"<SVCURRENTCOMPANY>{_xml(company)}</SVCURRENTCOMPANY>",
+            "<SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>",
+        ]
+        if from_date:
+            static_variables.append(f'<SVFROMDATE TYPE="Date">{_xml(_format_tally_report_date(from_date))}</SVFROMDATE>')
+        if to_date:
+            static_variables.append(f'<SVTODATE TYPE="Date">{_xml(_format_tally_report_date(to_date))}</SVTODATE>')
+
+        collection_name = "RangeAllVouchers"
+        fetch = "*, ALLLEDGERENTRIES.*, ALLINVENTORYENTRIES.*" if full_fetch else "Date, VoucherNumber, PartyLedgerName, PartyName, VoucherTypeName, GUID"
+        return (
+            "<ENVELOPE>"
+            "<HEADER>"
+            "<VERSION>1</VERSION>"
+            "<TALLYREQUEST>EXPORT</TALLYREQUEST>"
+            "<TYPE>COLLECTION</TYPE>"
+            f"<ID>{collection_name}</ID>"
+            "</HEADER>"
+            "<BODY><DESC>"
+            f"<STATICVARIABLES>{''.join(static_variables)}</STATICVARIABLES>"
+            "<TDL><TDLMESSAGE>"
+            f'<COLLECTION NAME="{collection_name}" ISINITIALIZE="Yes">'
+            "<TYPE>Voucher</TYPE>"
+            f"<FETCH>{fetch}</FETCH>"
             "</COLLECTION>"
             "</TDLMESSAGE></TDL>"
             "</DESC></BODY>"

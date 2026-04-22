@@ -320,6 +320,17 @@ def parse_vouchers(xml_string: str | bytes) -> list[dict]:
             "unknown_sections": [],
         }
 
+        if not any(
+            [
+                voucher["voucher_type_name"],
+                voucher["voucher_date"],
+                voucher["voucher_number"],
+                voucher["party_name"],
+                voucher["guid"],
+            ]
+        ):
+            continue
+
         for inv_el in el.findall("ALLINVENTORYENTRIES.LIST"):
             item_name = _text(inv_el, "STOCKITEMNAME")
             if not item_name:

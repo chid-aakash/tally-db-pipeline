@@ -45,7 +45,8 @@ This file is intentionally adversarial. Items stay here until the repo can eithe
   - Remaining gaps:
     - chunk sizing starts static but now supports adaptive window splitting on failure
     - no response-size-aware tuning yet
-    - collection-based range mode and auto fallback now exist, but they still need broader live validation before becoming safe defaults
+    - collection-based range mode is now the default for dated voucher pulls after live validation on our Tally
+    - still needs broader validation on other Tally datasets
 
 - XML-safe request construction.
   - Current state: dynamic XML values are now escaped before sending requests.
@@ -59,7 +60,7 @@ This file is intentionally adversarial. Items stay here until the repo can eithe
 - Date-range correctness for voucher exports.
   - Current state: profiled/chunked voucher commands now validate that returned voucher dates actually stay inside the requested window.
   - Remaining gaps:
-    - still need stronger live evidence on when `daybook`, `collection`, or `auto` is the safer choice on other Tally datasets
+    - still need stronger live evidence on when `daybook` should be retained as a useful fallback on other Tally datasets
 
 - Accidental local concurrency.
   - Current state: Tally-facing CLI commands use a local lock file to prevent overlapping commands from the same machine.
@@ -84,7 +85,7 @@ This file is intentionally adversarial. Items stay here until the repo can eithe
   - Needed: repeatable test matrix over all saved XML files.
 
 - Voucher-family profiling.
-  - Current state: `profile-vouchers` and `profile-vouchers-chunked` can inspect a date range and summarize voucher types seen in Day Book output, `sync-profiled-vouchers` can use that profile to drive extraction, and company-family profiling/sync now exists for separate FY-suffixed companies.
+  - Current state: `profile-vouchers` and `profile-vouchers-chunked` can inspect a date range and summarize voucher types from collection-based voucher pulls, `sync-profiled-vouchers` can use that profile to drive extraction, and company-family profiling/sync now exists for separate FY-suffixed companies.
   - Remaining gaps:
     - fiscal-year inference is still based on company-name suffixes
     - company-family workflows still depend on the same date-range extraction path, so they correctly fail if Tally does not honor date windows
@@ -140,7 +141,7 @@ This file is intentionally adversarial. Items stay here until the repo can eithe
 
 ## Immediate next implementation targets
 
-1. Live-validate `collection` and `auto` range modes on more Tally datasets before changing defaults.
+1. Live-validate collection-based dated voucher pulls on more Tally datasets.
 2. Add replay-based regression scripts over saved XML exports.
 3. Add richer discovery/profile commands for voucher families in use.
 4. Tighten upgrade cleanup for legacy blank-company master rows.
