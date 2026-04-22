@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import time
 
 import requests
 
@@ -28,24 +29,55 @@ _VOUCHER_FILTERS = {
 
 
 class TallyClient:
-    def __init__(self, host: str = "127.0.0.1", port: int = 9000, timeout: int = 120):
+    def __init__(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 9000,
+        timeout: int = 120,
+        request_delay_ms: int = 250,
+        max_retries: int = 2,
+        retry_backoff_ms: int = 1500,
+    ):
         self.host = host
         self.port = port
         self.timeout = timeout
+        self.request_delay_ms = request_delay_ms
+        self.max_retries = max_retries
+        self.retry_backoff_ms = retry_backoff_ms
         self.base_url = f"http://{host}:{port}"
+        self._last_request_started_at = 0.0
 
     def post(self, xml_payload: str) -> str:
-        response = requests.post(
-            self.base_url,
-            data=xml_payload.encode("utf-8"),
-            headers={"Content-Type": "application/xml"},
-            timeout=self.timeout,
-        )
-        response.raise_for_status()
-        text = response.text
-        text = _INVALID_XML_CHARS.sub("", text)
-        text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)
-        return text
+        last_error: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            self._wait_before_next_request()
+            try:
+                response = requests.post(
+                    self.base_url,
+                    data=xml_payload.encode("utf-8"),
+                    headers={"Content-Type": "application/xml"},
+                    timeout=self.timeout,
+                )
+                response.raise_for_status()
+                text = response.text
+                text = _INVALID_XML_CHARS.sub("", text)
+                text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)
+                return text
+            except (requests.ConnectionError, requests.Timeout) as exc:
+                last_error = exc
+                if attempt >= self.max_retries:
+                    raise
+                time.sleep((self.retry_backoff_ms / 1000.0) * (attempt + 1))
+        raise RuntimeError(str(last_error) if last_error else "Unknown Tally request error")
+
+    def _wait_before_next_request(self) -> None:
+        now = time.monotonic()
+        if self._last_request_started_at:
+            min_spacing = self.request_delay_ms / 1000.0
+            elapsed = now - self._last_request_started_at
+            if elapsed < min_spacing:
+                time.sleep(min_spacing - elapsed)
+        self._last_request_started_at = time.monotonic()
 
     def test_connection(self) -> dict:
         try:
@@ -94,8 +126,9 @@ class TallyClient:
         )
 
     @staticmethod
-    def build_report_xml(report_name: str, explode: bool = True) -> str:
+    def build_report_xml(report_name: str, explode: bool = True, company: str | None = None) -> str:
         explode_flag = "<EXPLODEFLAG>Yes</EXPLODEFLAG>" if explode else ""
+        company_xml = f"<SVCURRENTCOMPANY>{company}</SVCURRENTCOMPANY>" if company else ""
         return (
             "<ENVELOPE>"
             "<HEADER>"
@@ -105,7 +138,7 @@ class TallyClient:
             f"<ID>{report_name}</ID>"
             "</HEADER>"
             "<BODY><DESC><STATICVARIABLES>"
-            f"{explode_flag}<SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>"
+            f"{explode_flag}{company_xml}<SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>"
             "</STATICVARIABLES></DESC></BODY>"
             "</ENVELOPE>"
         )
@@ -173,3 +206,10 @@ class TallyClient:
             "response_xml": response_xml,
             "response_sha256": hashlib.sha256(response_xml.encode("utf-8")).hexdigest(),
         }
+
+    @staticmethod
+    def extract_line_error(response_xml: str) -> str | None:
+        match = re.search(r"<LINEERROR>(.*?)</LINEERROR>", response_xml, re.DOTALL)
+        if not match:
+            return None
+        return match.group(1).replace("&apos;", "'").strip()

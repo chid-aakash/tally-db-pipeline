@@ -70,9 +70,14 @@ def parse_company_collection(xml_string: str | bytes) -> list[dict]:
     root = ET.fromstring(_clean_xml(xml_string))
     companies: list[dict] = []
     for el in root.iter("COMPANY"):
+        # Ignore CMPINFO counters like <COMPANY>0</COMPANY>; real company rows
+        # are object nodes with either a NAME attr or child fields.
+        name = _attr(el, "NAME") or _text(el, "NAME")
+        if not name and not list(el):
+            continue
         companies.append(
             {
-                "name": _attr(el, "NAME") or _text(el, "NAME"),
+                "name": name,
                 "formal_name": _text(el, "FORMALNAME"),
                 "currency_code": _text(el, "BASICCURRENCYCODE"),
                 "country": _text(el, "COUNTRY"),
@@ -291,7 +296,11 @@ def parse_vouchers(xml_string: str | bytes) -> list[dict]:
                 }
             )
 
-        ledger_lists = el.findall("LEDGERENTRIES.LIST") + el.findall("ALLLEDGERENTRIES.LIST")
+        # ALLLEDGERENTRIES is the fuller form. When present, Tally may also emit
+        # LEDGERENTRIES, which would double-count the same rows if we read both.
+        ledger_lists = el.findall("ALLLEDGERENTRIES.LIST")
+        if not ledger_lists:
+            ledger_lists = el.findall("LEDGERENTRIES.LIST")
         for led_el in ledger_lists:
             ledger_name = _text(led_el, "LEDGERNAME")
             if not ledger_name:

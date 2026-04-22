@@ -15,6 +15,9 @@ class Settings:
     tally_port: int = int(os.getenv("TALLY_PORT", "9000"))
     database_url: str = os.getenv("DATABASE_URL", "sqlite:///./data/tally_pipeline.sqlite3")
     tally_timeout_seconds: int = int(os.getenv("TALLY_TIMEOUT_SECONDS", "120"))
+    tally_request_delay_ms: int = int(os.getenv("TALLY_REQUEST_DELAY_MS", "250"))
+    tally_max_retries: int = int(os.getenv("TALLY_MAX_RETRIES", "2"))
+    tally_retry_backoff_ms: int = int(os.getenv("TALLY_RETRY_BACKOFF_MS", "1500"))
 
 
 def get_settings() -> Settings:

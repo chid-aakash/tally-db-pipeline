@@ -42,6 +42,7 @@ There is no separate bridge service in this repo.
 - The machine running this repo can reach the Tally machine over the network.
 - Tally is usually reachable on port `9000`, but that should be confirmed in Tally settings.
 - Voucher sync requires the exact Tally company name, including financial-year suffixes when present.
+- For master-data sync, the target company should already be open inside Tally's UI.
 
 ## Before you start
 
@@ -173,6 +174,9 @@ TALLY_HOST=10.211.55.3
 TALLY_PORT=9000
 DATABASE_URL=sqlite:///./data/tally_pipeline.sqlite3
 TALLY_TIMEOUT_SECONDS=120
+TALLY_REQUEST_DELAY_MS=250
+TALLY_MAX_RETRIES=2
+TALLY_RETRY_BACKOFF_MS=1500
 ```
 
 Field meanings:
@@ -181,6 +185,9 @@ Field meanings:
 - `TALLY_PORT`: Tally HTTP/XML port
 - `DATABASE_URL`: where the local database should live
 - `TALLY_TIMEOUT_SECONDS`: HTTP timeout for large Tally requests
+- `TALLY_REQUEST_DELAY_MS`: pause between requests so Tally is not hammered
+- `TALLY_MAX_RETRIES`: retry count for connection/timeouts
+- `TALLY_RETRY_BACKOFF_MS`: backoff between retries
 
 ## Step 8: Confirm the machine can reach Tally
 
@@ -238,6 +245,36 @@ If this fails with a connection error:
 - make sure Tally is open
 - make sure the Tally HTTP server is enabled
 
+## Step 10A: Run a fast discovery probe
+
+Run:
+
+```bash
+tally-db-pipeline discover
+```
+
+This returns compact JSON showing:
+
+- whether Tally is reachable
+- which companies are visible
+- warnings if Tally looks unhealthy or no companies are exposed
+
+If you already know the exact company name, you can probe voucher-type access too:
+
+```bash
+tally-db-pipeline discover --company "Shanke Pvt Ltd - 2025-26"
+```
+
+## Step 10B: Run a human-readable diagnostic check
+
+Run:
+
+```bash
+tally-db-pipeline doctor --company "Shanke Pvt Ltd - 2025-26"
+```
+
+Use this when the customer says something vague like "it worked once but not now".
+
 ## Step 11: List the available company names
 
 Run:
@@ -272,7 +309,24 @@ This creates the local SQLite database file automatically at:
 
 You do not need to manually create the `data/` folder. The code creates it automatically for SQLite.
 
+## Step 12A: Inspect the local database report
+
+Run:
+
+```bash
+tally-db-pipeline report
+```
+
+This prints a JSON report with:
+
+- local table counts
+- recent sync runs
+- recent failures
+- whether any syncs are still marked as running
+
 ## Step 13: Pull master data
+
+Before running this step, make sure the target company is open in Tally.
 
 Run:
 
@@ -331,12 +385,32 @@ Other common voucher types:
 - `Credit Note`
 - `Debit Note`
 
+Or run the standard accounting voucher families in one command:
+
+```bash
+tally-db-pipeline sync-standard-vouchers --company "Shanke Pvt Ltd - 2025-26"
+```
+
+If you want it to keep going even if one voucher family fails:
+
+```bash
+tally-db-pipeline sync-standard-vouchers --company "Shanke Pvt Ltd - 2025-26" --continue-on-error
+```
+
 ## Step 16: Run the standard full sync
+
+Before running this step, make sure the target company is open in Tally.
 
 Once the single voucher test works, run:
 
 ```bash
 tally-db-pipeline sync-all --company "Shanke Pvt Ltd - 2025-26"
+```
+
+If you want it to keep going even if one voucher family fails:
+
+```bash
+tally-db-pipeline sync-all --company "Shanke Pvt Ltd - 2025-26" --continue-on-error
 ```
 
 This runs, in order:
@@ -411,6 +485,18 @@ Test connectivity:
 tally-db-pipeline ping
 ```
 
+Fast discovery JSON:
+
+```bash
+tally-db-pipeline discover
+```
+
+Human-readable diagnostics:
+
+```bash
+tally-db-pipeline doctor --company "Exact Company Name"
+```
+
 List companies:
 
 ```bash
@@ -441,10 +527,22 @@ Sync one voucher family:
 tally-db-pipeline sync-vouchers --company "Exact Company Name" --voucher-type Sales
 ```
 
+Sync the standard accounting voucher families:
+
+```bash
+tally-db-pipeline sync-standard-vouchers --company "Exact Company Name"
+```
+
 Run the common end-to-end sync:
 
 ```bash
 tally-db-pipeline sync-all --company "Exact Company Name"
+```
+
+Inspect the local database and recent run history:
+
+```bash
+tally-db-pipeline report
 ```
 
 ## Common problems
@@ -459,6 +557,12 @@ Check:
 - port is correct
 - the machine running this repo can reach the Tally machine
 
+Then run:
+
+```bash
+tally-db-pipeline discover
+```
+
 ### Problem: `list-companies` works but vouchers do not sync
 
 Most likely cause:
@@ -470,6 +574,7 @@ Fix:
 - run `tally-db-pipeline list-companies`
 - copy the company name exactly
 - use that exact string in `--company`
+- run `tally-db-pipeline doctor --company "Exact Company Name"`
 
 ### Problem: customer has custom voucher names
 
@@ -514,6 +619,34 @@ The protocol is the same, but the business data shape can vary. That is why the 
 4. `sync-voucher-types`
 5. `sync-vouchers` for one family
 6. then `sync-all`
+
+### Problem: `sync-masters` returns no data or says no master data was returned
+
+Most likely cause:
+
+- the company is not currently open in Tally's UI
+
+Fix:
+
+- open the target company in Tally
+- stay on that company
+- run `tally-db-pipeline sync-masters` again
+
+### Problem: one run worked, later runs hang or time out
+
+Most likely causes:
+
+- Tally is being hit with overlapping requests
+- Tally is open but busy, half-loaded, or in a different UI state
+- a large voucher family is taking too long for the current timeout
+
+Fix:
+
+- run only one command at a time against that Tally instance
+- wait for one command to finish before starting another
+- run `tally-db-pipeline doctor --company "Exact Company Name"`
+- inspect `tally-db-pipeline report`
+- if needed, increase `TALLY_TIMEOUT_SECONDS`
 
 ## Notes for customers
 
