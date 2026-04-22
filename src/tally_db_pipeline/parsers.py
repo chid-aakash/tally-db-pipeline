@@ -4,6 +4,8 @@ import re
 import xml.etree.ElementTree as ET
 
 _INVALID_XML_CHARS = re.compile(r"&#(?:[0-8]|1[0-1]|1[4-9]|2[0-9]|3[01]);")
+_PREFIXED_TAG_RE = re.compile(r"(<\/?)([A-Za-z_][\w.-]*):([A-Za-z_][\w.-]*)(?=[\s>/])")
+_PREFIXED_ATTR_RE = re.compile(r"(\s)(?!xmlns:)([A-Za-z_][\w.-]*):([A-Za-z_][\w.-]*)(=)")
 
 
 def _clean_xml(text: str | bytes) -> str:
@@ -11,6 +13,12 @@ def _clean_xml(text: str | bytes) -> str:
         text = text.decode("utf-8", errors="replace")
     text = _INVALID_XML_CHARS.sub("", text)
     text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)
+    # Tally sometimes emits prefixed tag/attribute names without the matching
+    # namespace declaration on large payloads. ElementTree rejects these with
+    # "unbound prefix", but we do not depend on the prefix semantics for the
+    # fields we normalize, so flatten them before parsing.
+    text = _PREFIXED_TAG_RE.sub(r"\1\2__\3", text)
+    text = _PREFIXED_ATTR_RE.sub(r"\1\2__\3\4", text)
     return text.replace("\r", "")
 
 
