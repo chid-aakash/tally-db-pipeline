@@ -33,6 +33,10 @@ _VOUCHER_FILTERS = {
 }
 
 
+def _voucher_filter_formula(voucher_type: str) -> str:
+    return _VOUCHER_FILTERS.get(voucher_type, f'$VoucherTypeName = "{_tdl_string(voucher_type)}"')
+
+
 class TallyClient:
     def __init__(
         self,
@@ -286,10 +290,8 @@ class TallyClient:
 
     @staticmethod
     def build_voucher_collection_xml(company: str, voucher_type: str) -> str:
-        if voucher_type not in _VOUCHER_FILTERS:
-            raise ValueError(f"Unsupported voucher type: {voucher_type}")
         filter_name = re.sub(r"[^A-Za-z0-9]", "", voucher_type) + "Filter"
-        filter_formula = _VOUCHER_FILTERS[voucher_type]
+        filter_formula = _voucher_filter_formula(voucher_type)
         return (
             "<ENVELOPE>"
             "<HEADER>"
@@ -338,10 +340,8 @@ class TallyClient:
 
         tdl = ""
         if voucher_type:
-            if voucher_type not in _VOUCHER_FILTERS:
-                raise ValueError(f"Unsupported voucher type: {voucher_type}")
             filter_name = re.sub(r"[^A-Za-z0-9]", "", voucher_type) + "Filter"
-            filter_formula = _VOUCHER_FILTERS[voucher_type]
+            filter_formula = _voucher_filter_formula(voucher_type)
             tdl = (
                 "<TDL><TDLMESSAGE>"
                 '<REPORT NAME="Day Book" ISMODIFY="Yes" ISFIXED="No" ISINITIALIZE="No" ISOPTION="No" ISINTERNAL="No">'
@@ -390,6 +390,10 @@ def _xml(value: str) -> str:
 
 def _xml_attr(value: str) -> str:
     return escape(value, {'"': "&quot;", "'": "&apos;"})
+
+
+def _tdl_string(value: str) -> str:
+    return value.replace('"', '\\"')
 
 
 def _format_tally_date(raw: str) -> str:

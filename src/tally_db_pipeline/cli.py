@@ -24,6 +24,7 @@ from .sync import (
     sync_companies,
     sync_masters,
     sync_standard_vouchers,
+    sync_profiled_vouchers,
     sync_voucher_types,
     sync_vouchers,
     sync_vouchers_in_chunks,
@@ -341,6 +342,38 @@ def sync_standard_vouchers_command(
             typer.echo(f"{result['voucher_type']}: ERROR - {result['error']}")
         else:
             typer.echo(f"{result['voucher_type']}: {result['saved']}")
+
+
+@app.command("sync-profiled-vouchers")
+def sync_profiled_vouchers_command(
+    company: str = typer.Option(..., help="Exact Tally company name, including FY suffix where applicable."),
+    from_date: str = typer.Option(..., help="Inclusive start date in YYYY-MM-DD format."),
+    to_date: str = typer.Option(..., help="Inclusive end date in YYYY-MM-DD format."),
+    chunk_days: int = typer.Option(31, help="Chunk size in days."),
+    include_standard: bool = typer.Option(True, help="Include standard voucher base types."),
+    include_custom: bool = typer.Option(True, help="Include custom or non-standard voucher base types."),
+    min_count: int = typer.Option(1, help="Only sync profiled voucher types seen at least this many times."),
+    continue_on_error: bool = typer.Option(False, help="Continue even if one profiled voucher type fails."),
+    adaptive: bool = typer.Option(True, help="Automatically split failed date windows into smaller windows."),
+    min_chunk_days: int = typer.Option(1, help="Smallest window size to try when adaptive splitting is enabled."),
+) -> None:
+    init_db()
+    with _tally_client() as client, get_session() as session:
+        result = sync_profiled_vouchers(
+            session,
+            client,
+            company_name=company,
+            start_date=from_date,
+            end_date=to_date,
+            chunk_days=chunk_days,
+            include_standard=include_standard,
+            include_custom=include_custom,
+            min_count=min_count,
+            continue_on_error=continue_on_error,
+            adaptive=adaptive,
+            min_chunk_days=min_chunk_days,
+        )
+    typer.echo(json.dumps(result, indent=2))
 
 
 @app.command("sync-all")

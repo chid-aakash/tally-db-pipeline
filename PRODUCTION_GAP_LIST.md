@@ -78,7 +78,7 @@ This file is intentionally adversarial. Items stay here until the repo can eithe
   - Needed: repeatable test matrix over all saved XML files.
 
 - Voucher-family profiling.
-  - Current state: `profile-vouchers` and `profile-vouchers-chunked` can inspect a date range and summarize voucher types seen in Day Book output.
+  - Current state: `profile-vouchers` and `profile-vouchers-chunked` can inspect a date range and summarize voucher types seen in Day Book output, and `sync-profiled-vouchers` can use that profile to drive extraction.
   - Remaining gaps:
     - no fiscal-year auto-discovery
     - no company-wide auto-walk across multiple fiscal years yet

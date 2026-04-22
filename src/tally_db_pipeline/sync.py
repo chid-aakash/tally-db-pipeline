@@ -51,6 +51,19 @@ STANDARD_VOUCHER_TYPES = [
     "Debit Note",
 ]
 
+STANDARD_BASE_VOUCHER_TYPES = set(STANDARD_VOUCHER_TYPES) | {
+    "Sales Order",
+    "Purchase Order",
+    "Delivery Note",
+    "Receipt Note",
+    "Stock Journal",
+    "Physical Stock",
+    "Memorandum",
+    "Rejections In",
+    "Rejections Out",
+    "Payroll",
+}
+
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
 
@@ -1093,6 +1106,99 @@ def sync_standard_vouchers(
             if not continue_on_error:
                 raise
     return results
+
+
+def recommended_voucher_types_from_profile(
+    profile_result: dict,
+    *,
+    include_standard: bool = True,
+    include_custom: bool = True,
+    min_count: int = 1,
+) -> list[str]:
+    recommended: list[str] = []
+    seen: set[str] = set()
+    for row in profile_result.get("voucher_types", []):
+        base_type = row.get("base_voucher_type") or row.get("voucher_type_name")
+        if row.get("count", 0) < min_count:
+            continue
+        is_standard = base_type in STANDARD_BASE_VOUCHER_TYPES
+        if (is_standard and not include_standard) or (not is_standard and not include_custom):
+            continue
+        if base_type in seen:
+            continue
+        seen.add(base_type)
+        recommended.append(base_type)
+    return recommended
+
+
+def sync_profiled_vouchers(
+    session: Session,
+    client: TallyClient,
+    *,
+    company_name: str,
+    start_date: str,
+    end_date: str,
+    chunk_days: int = 31,
+    include_standard: bool = True,
+    include_custom: bool = True,
+    min_count: int = 1,
+    continue_on_error: bool = False,
+    adaptive: bool = True,
+    min_chunk_days: int = 1,
+) -> dict:
+    profile_result = profile_vouchers_in_chunks(
+        session,
+        client,
+        company_name=company_name,
+        start_date=start_date,
+        end_date=end_date,
+        chunk_days=chunk_days,
+        adaptive=adaptive,
+        min_chunk_days=min_chunk_days,
+        continue_on_error=continue_on_error,
+    )
+    recommended_types = recommended_voucher_types_from_profile(
+        profile_result,
+        include_standard=include_standard,
+        include_custom=include_custom,
+        min_count=min_count,
+    )
+
+    results: list[dict] = []
+    for voucher_type in recommended_types:
+        try:
+            chunk_results = sync_vouchers_in_chunks(
+                session,
+                client,
+                company_name=company_name,
+                voucher_type=voucher_type,
+                start_date=start_date,
+                end_date=end_date,
+                chunk_days=chunk_days,
+                continue_on_error=continue_on_error,
+                adaptive=adaptive,
+                min_chunk_days=min_chunk_days,
+            )
+            results.append(
+                {
+                    "voucher_type": voucher_type,
+                    "saved": sum(item.get("saved", 0) for item in chunk_results if not item.get("error")),
+                    "windows": chunk_results,
+                }
+            )
+        except Exception as exc:
+            results.append({"voucher_type": voucher_type, "saved": 0, "error": str(exc), "windows": []})
+            if not continue_on_error:
+                raise
+
+    return {
+        "company_name": company_name,
+        "from_date": start_date,
+        "to_date": end_date,
+        "recommended_voucher_types": recommended_types,
+        "profile": profile_result,
+        "results": results,
+    }
 
 
 def replay_xml_file(
