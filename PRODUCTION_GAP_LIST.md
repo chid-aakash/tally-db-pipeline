@@ -56,9 +56,8 @@ This file is intentionally adversarial. Items stay here until the repo can eithe
   - Needed: strict fast probes for diagnostics.
 
 - Strong failure semantics for “reachable but unusable” Tally states.
-  - Current state: `discover` and `doctor` now surface request durations and classify `connection_error`, `timeout`, `line_error`, and empty-data responses.
+  - Current state: `discover` and `doctor` now surface request durations, classify `connection_error`, `timeout`, `line_error`, and empty-data responses, and emit `health_status` plus recommended actions.
   - Remaining gaps:
-    - no automatic remediation suggestions yet beyond docs
     - no probe history/trend view yet
 
 ## High

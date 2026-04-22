@@ -295,6 +295,15 @@ Use this when the customer says something vague like "it worked once but not now
 
 and prints request durations so you can tell the difference between "cannot reach Tally" and "Tally is reachable but not responding usefully".
 
+It also reports a high-level `health_status` such as:
+
+- `healthy`
+- `reachable_but_stalled`
+- `reachable_but_no_companies`
+- `reachable_but_no_master_data`
+- `reachable_but_rejected`
+- `unreachable`
+
 ## Step 11: List the available company names
 
 Run:

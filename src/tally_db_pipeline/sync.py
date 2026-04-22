@@ -245,11 +245,15 @@ def sync_companies(session: Session, client: TallyClient) -> list[dict]:
 def discover_tally(client: TallyClient, company_name: str | None = None) -> dict:
     connection = client.probe("companies_probe", client.build_company_collection_xml())
     if not connection.get("ok"):
+        error_kind = connection.get("error_kind")
+        recommended_actions = _recommended_actions_for_error_kind(error_kind)
         return {
             "connected": False,
             "base_url": client.base_url,
             "companies": [],
             "warnings": [connection.get("error", "Connection failed")],
+            "health_status": _health_status_for_error_kind(error_kind),
+            "recommended_actions": recommended_actions,
             "tests": {
                 "companies": {
                     "ok": False,
@@ -264,6 +268,7 @@ def discover_tally(client: TallyClient, company_name: str | None = None) -> dict
     companies = parse_company_collection(connection["response_xml"])
     company_names = [row["name"] for row in companies if row["name"]]
     warnings: list[str] = []
+    recommended_actions: list[str] = []
     tests: dict[str, dict] = {}
 
     tests["companies"] = {
@@ -275,6 +280,12 @@ def discover_tally(client: TallyClient, company_name: str | None = None) -> dict
     }
     if not company_names:
         warnings.append("No companies were discoverable from Tally. The active company may not be open or exposed.")
+        recommended_actions.extend(
+            [
+                "Make sure at least one company is open in the Tally UI.",
+                "Re-run `tally-db-pipeline list-companies` after opening the target company.",
+            ]
+        )
 
     if company_name:
         voucher_type_payload = client.probe(
@@ -296,8 +307,10 @@ def discover_tally(client: TallyClient, company_name: str | None = None) -> dict
         }
         if voucher_type_payload.get("error"):
             warnings.append(f"Voucher type probe error for '{company_name}': {voucher_type_payload['error']}")
+            recommended_actions.extend(_recommended_actions_for_error_kind(voucher_type_payload.get("error_kind")))
         elif not voucher_type_rows:
             warnings.append(f"No voucher types returned for '{company_name}'.")
+            recommended_actions.append("Run `tally-db-pipeline sync-voucher-types --company \"Exact Company Name\"` only after verifying the company is fully loaded in Tally.")
 
         masters_probe = client.probe(
             "masters_probe",
@@ -315,18 +328,98 @@ def discover_tally(client: TallyClient, company_name: str | None = None) -> dict
         }
         if masters_probe.get("error"):
             warnings.append(f"Master-data probe error for '{company_name}': {masters_probe['error']}")
+            recommended_actions.extend(_recommended_actions_for_error_kind(masters_probe.get("error_kind")))
         elif master_rows == 0:
             warnings.append(f"Master-data probe returned zero groups/ledgers for '{company_name}'.")
+            recommended_actions.append("Open the target company in Tally and leave it active before running `sync-masters`.")
     else:
         warnings.append("Voucher-type probe skipped because no company name was provided.")
+        recommended_actions.append("Run `tally-db-pipeline list-companies` and then re-run with `--company`.")
+
+    health_status = _derive_health_status(
+        companies_ok=tests["companies"]["ok"],
+        companies_error_kind=tests["companies"].get("error_kind"),
+        voucher_tests=tests.get("voucher_types"),
+        master_tests=tests.get("masters"),
+    )
 
     return {
         "connected": True,
         "base_url": client.base_url,
         "companies": company_names,
         "warnings": warnings,
+        "health_status": health_status,
+        "recommended_actions": _dedupe_preserve_order(recommended_actions),
         "tests": tests,
     }
+
+
+def _recommended_actions_for_error_kind(error_kind: str | None) -> list[str]:
+    if error_kind == "connection_error":
+        return [
+            "Verify Tally is running and HTTP/XML is enabled on the configured host and port.",
+            "Verify the machine running this repo can reach the Tally machine over the network.",
+        ]
+    if error_kind == "timeout":
+        return [
+            "Make sure Tally is open and idle, then retry one command at a time.",
+            "Increase `TALLY_TIMEOUT_SECONDS` for large probes or syncs.",
+            "Prefer chunked commands for large historical ranges.",
+        ]
+    if error_kind == "line_error":
+        return [
+            "Check the exact company name and make sure it matches Tally exactly.",
+            "Open the company in the Tally UI before retrying report-based commands.",
+        ]
+    if error_kind == "unexpected_error":
+        return [
+            "Capture a support bundle with `tally-db-pipeline support-bundle`.",
+            "Inspect recent run errors with `tally-db-pipeline report`.",
+        ]
+    return []
+
+
+def _health_status_for_error_kind(error_kind: str | None) -> str:
+    if error_kind == "connection_error":
+        return "unreachable"
+    if error_kind == "timeout":
+        return "reachable_but_stalled"
+    if error_kind == "line_error":
+        return "reachable_but_rejected"
+    return "unhealthy"
+
+
+def _derive_health_status(
+    *,
+    companies_ok: bool,
+    companies_error_kind: str | None,
+    voucher_tests: dict | None,
+    master_tests: dict | None,
+) -> str:
+    if companies_error_kind:
+        return _health_status_for_error_kind(companies_error_kind)
+    if not companies_ok:
+        return "reachable_but_no_companies"
+    if voucher_tests and voucher_tests.get("error_kind"):
+        return _health_status_for_error_kind(voucher_tests.get("error_kind"))
+    if master_tests and master_tests.get("error_kind"):
+        return _health_status_for_error_kind(master_tests.get("error_kind"))
+    if master_tests and not master_tests.get("ok"):
+        return "reachable_but_no_master_data"
+    if voucher_tests and not voucher_tests.get("ok"):
+        return "reachable_but_no_voucher_types"
+    return "healthy"
+
+
+def _dedupe_preserve_order(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        result.append(item)
+    return result
 
 
 def build_bootstrap_plan(client: TallyClient, company_name: str | None = None) -> dict:

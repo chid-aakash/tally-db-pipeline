@@ -88,12 +88,16 @@ def doctor(company: Optional[str] = typer.Option(default=None, help="Exact compa
     if not result["connected"]:
         companies_test = result["tests"].get("companies", {})
         typer.echo(f"FAIL: {result['warnings'][0]}", err=True)
+        typer.echo(f"Health status: {result.get('health_status')}", err=True)
         if companies_test:
             typer.echo(f"Company probe error kind: {companies_test.get('error_kind')}", err=True)
             typer.echo(f"Company probe duration ms: {companies_test.get('duration_ms')}", err=True)
+        for action in result.get("recommended_actions", []):
+            typer.echo(f"Recommended: {action}", err=True)
         raise typer.Exit(code=1)
 
     typer.echo(f"Connected to {result['base_url']}")
+    typer.echo(f"Health status: {result.get('health_status')}")
     typer.echo(f"Companies discovered: {len(result['companies'])}")
     for name in result["companies"]:
         typer.echo(f"- {name}")
@@ -133,6 +137,10 @@ def doctor(company: Optional[str] = typer.Option(default=None, help="Exact compa
         typer.echo("Warnings:")
         for warning in result["warnings"]:
             typer.echo(f"- {warning}")
+    if result.get("recommended_actions"):
+        typer.echo("Recommended actions:")
+        for action in result["recommended_actions"]:
+            typer.echo(f"- {action}")
 
 
 @app.command("bootstrap")
