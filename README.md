@@ -656,6 +656,18 @@ Include recent raw XML bodies too:
 tally-db-pipeline support-bundle --include-payload-bodies --payload-limit 3
 ```
 
+Preview raw payload cleanup without deleting anything:
+
+```bash
+tally-db-pipeline prune-payloads --keep-latest 100 --dry-run
+```
+
+Delete older raw payloads while keeping the latest 100:
+
+```bash
+tally-db-pipeline prune-payloads --keep-latest 100
+```
+
 Replay a saved XML export into the local database:
 
 ```bash

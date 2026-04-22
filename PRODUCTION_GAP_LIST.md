@@ -88,7 +88,10 @@ This file is intentionally adversarial. Items stay here until the repo can eithe
     - no redaction mode for payload bodies yet
 
 - Retention or dedupe policy for raw payloads.
-  - Current state: every payload is retained forever.
+  - Current state: operators can prune payload history with `prune-payloads`.
+  - Remaining gaps:
+    - no scheduled retention policy yet
+    - no response-sha based dedupe yet
 
 ## Medium
 

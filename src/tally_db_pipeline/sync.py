@@ -5,7 +5,7 @@ import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from .config import get_settings
@@ -1219,6 +1219,9 @@ def get_database_report(session: Session) -> dict:
     def count(model) -> int:
         return session.scalar(select(func.count()).select_from(model)) or 0
 
+    payload_oldest = session.scalar(select(func.min(RawPayload.created_at)))
+    payload_newest = session.scalar(select(func.max(RawPayload.created_at)))
+
     recent_runs = [
         {
             "id": row.id,
@@ -1252,6 +1255,8 @@ def get_database_report(session: Session) -> dict:
         "voucher_ledger_entries": count(VoucherLedgerEntry),
         "voucher_unknown_sections": count(VoucherUnknownSection),
         "raw_payloads": count(RawPayload),
+        "raw_payload_oldest": payload_oldest.isoformat(timespec="seconds") if payload_oldest else None,
+        "raw_payload_newest": payload_newest.isoformat(timespec="seconds") if payload_newest else None,
         "checkpoints": [
             {
                 "entity_type": row.entity_type,
@@ -1267,6 +1272,42 @@ def get_database_report(session: Session) -> dict:
         "running_syncs": count_running_syncs(session),
         "latest_voucher_syncs": latest_voucher_syncs,
         "recent_runs": recent_runs,
+    }
+
+
+def prune_raw_payloads(
+    session: Session,
+    *,
+    keep_latest: int = 100,
+    request_type: str | None = None,
+    dry_run: bool = False,
+) -> dict:
+    if keep_latest < 0:
+        raise ValueError("keep_latest must be zero or greater.")
+
+    base_query = select(RawPayload.id).order_by(RawPayload.id.desc())
+    if request_type:
+        base_query = base_query.where(RawPayload.request_type == request_type)
+
+    ids_to_keep = [row for row in session.scalars(base_query.limit(keep_latest)).all()]
+    delete_query = select(RawPayload.id)
+    if request_type:
+        delete_query = delete_query.where(RawPayload.request_type == request_type)
+    if ids_to_keep:
+        delete_query = delete_query.where(RawPayload.id.not_in(ids_to_keep))
+
+    ids_to_delete = [row for row in session.scalars(delete_query).all()]
+    deleted_count = len(ids_to_delete)
+    if deleted_count and not dry_run:
+        session.execute(delete(RawPayload).where(RawPayload.id.in_(ids_to_delete)))
+        session.commit()
+
+    return {
+        "request_type": request_type,
+        "keep_latest": keep_latest,
+        "dry_run": dry_run,
+        "deleted_count": deleted_count,
+        "kept_count": len(ids_to_keep),
     }
 
 

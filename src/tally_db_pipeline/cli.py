@@ -15,6 +15,7 @@ from .sync import (
     discover_tally,
     get_database_report,
     init_db,
+    prune_raw_payloads,
     profile_vouchers,
     profile_vouchers_in_chunks,
     replay_xml_file,
@@ -370,6 +371,23 @@ def support_bundle(
             output_directory=output_directory,
             include_payload_bodies=include_payload_bodies,
             payload_limit=payload_limit,
+    )
+    typer.echo(json.dumps(result, indent=2))
+
+
+@app.command("prune-payloads")
+def prune_payloads(
+    keep_latest: int = typer.Option(100, help="How many recent payloads to keep."),
+    request_type: Optional[str] = typer.Option(default=None, help="Optional request type filter."),
+    dry_run: bool = typer.Option(False, help="Show what would be deleted without deleting anything."),
+) -> None:
+    init_db()
+    with get_session() as session:
+        result = prune_raw_payloads(
+            session,
+            keep_latest=keep_latest,
+            request_type=request_type,
+            dry_run=dry_run,
         )
     typer.echo(json.dumps(result, indent=2))
 
