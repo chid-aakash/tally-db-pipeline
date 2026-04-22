@@ -37,6 +37,7 @@ These are the documents to consult before changing extraction logic, request for
   - Key takeaways:
     - Tally supports `Object`, `Collection`, and `Data` export request types.
     - `DayBook` supports `SVFROMDATE` / `SVTODATE` and TDL-based voucher-type filtering.
+    - The same reference lists `SVFROMDATE` / `SVTODATE` under common report variables with `YYYYMMDD` as the permissible format.
     - Error information can be returned in `<LINEERROR>` even when HTTP succeeds.
 
 - TallyPrime as a Server
@@ -54,6 +55,8 @@ These are the documents to consult before changing extraction logic, request for
 - TDL FAQ
   - https://help.tallysolutions.com/developer-reference/developer-reference-faq/tdl-faq/
   - Why it matters: useful for edge cases around dates, variables like `SVFromDate` and `SVToDate`, and collection patterns.
+  - Key takeaways:
+    - the FAQ explicitly describes narrowing voucher lookup scope by setting `SVFromDate` / `SVToDate` and then querying a Collection of Vouchers
 
 - JSON Integration
   - https://help.tallysolutions.com/tally-prime-integration-using-json-1/

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from contextlib import contextmanager
+from functools import wraps
 from typing import Optional
 
 import typer
@@ -16,12 +17,15 @@ from .sync import (
     discover_tally,
     get_database_report,
     init_db,
+    list_company_families,
     prune_raw_payloads,
+    profile_company_family_vouchers,
     profile_vouchers,
     profile_vouchers_in_chunks,
     replay_xml_file,
     replay_xml_bundle,
     sync_companies,
+    sync_company_family,
     sync_masters,
     sync_standard_vouchers,
     sync_profiled_vouchers,
@@ -34,6 +38,24 @@ from .tally_client import TallyClient
 
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
+
+
+def command(name: str):
+    def decorator(func):
+        @app.command(name)
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except typer.Exit:
+                raise
+            except Exception as exc:
+                typer.echo(str(exc), err=True)
+                raise typer.Exit(code=1)
+
+        return wrapper
+
+    return decorator
 
 
 def _client() -> TallyClient:
@@ -61,13 +83,13 @@ def _tally_client():
         raise typer.Exit(code=1)
 
 
-@app.command("init-db")
+@command("init-db")
 def init_db_command() -> None:
     init_db()
     typer.echo("Database schema initialized.")
 
 
-@app.command("ping")
+@command("ping")
 def ping() -> None:
     with _tally_client() as client:
         result = client.test_connection()
@@ -82,7 +104,7 @@ def ping() -> None:
             typer.echo(f"- {row['name']}")
 
 
-@app.command("list-companies")
+@command("list-companies")
 def list_companies() -> None:
     with _tally_client() as client:
         result = client.execute("companies", client.build_company_collection_xml())
@@ -92,14 +114,21 @@ def list_companies() -> None:
             typer.echo(row["name"])
 
 
-@app.command("discover")
+@command("list-company-families")
+def list_company_families_command() -> None:
+    with _tally_client() as client:
+        result = list_company_families(client)
+    typer.echo(json.dumps(result, indent=2))
+
+
+@command("discover")
 def discover(company: Optional[str] = typer.Option(default=None, help="Exact company name to probe voucher-type access.")) -> None:
     with _tally_client() as client:
         result = discover_tally(client, company_name=company)
     typer.echo(json.dumps(result, indent=2))
 
 
-@app.command("doctor")
+@command("doctor")
 def doctor(company: Optional[str] = typer.Option(default=None, help="Exact company name for voucher-type diagnostics.")) -> None:
     with _tally_client() as client:
         result = discover_tally(client, company_name=company)
@@ -161,14 +190,14 @@ def doctor(company: Optional[str] = typer.Option(default=None, help="Exact compa
             typer.echo(f"- {action}")
 
 
-@app.command("bootstrap")
+@command("bootstrap")
 def bootstrap(company: Optional[str] = typer.Option(default=None, help="Exact company name if already known.")) -> None:
     with _tally_client() as client:
         result = build_bootstrap_plan(client, company_name=company)
     typer.echo(json.dumps(result, indent=2))
 
 
-@app.command("sync-companies")
+@command("sync-companies")
 def sync_companies_command() -> None:
     init_db()
     with _tally_client() as client, get_session() as session:
@@ -176,7 +205,7 @@ def sync_companies_command() -> None:
     typer.echo(f"Synced {len(rows)} companies.")
 
 
-@app.command("sync-masters")
+@command("sync-masters")
 def sync_masters_command() -> None:
     init_db()
     with _tally_client() as client, get_session() as session:
@@ -186,7 +215,7 @@ def sync_masters_command() -> None:
     typer.echo(f"Ledgers: {result['ledgers']}")
 
 
-@app.command("sync-voucher-types")
+@command("sync-voucher-types")
 def sync_voucher_types_command(company: Optional[str] = typer.Option(default=None, help="Exact Tally company name if needed.")) -> None:
     init_db()
     with _tally_client() as client, get_session() as session:
@@ -194,7 +223,7 @@ def sync_voucher_types_command(company: Optional[str] = typer.Option(default=Non
     typer.echo(f"Synced {len(rows)} voucher types.")
 
 
-@app.command("sync-vouchers")
+@command("sync-vouchers")
 def sync_vouchers_command(
     company: str = typer.Option(..., help="Exact Tally company name, including FY suffix where applicable."),
     voucher_type: str = typer.Option(..., help="Base voucher type, for example Sales, Purchase, Receipt, Payment."),
@@ -216,7 +245,7 @@ def sync_vouchers_command(
         typer.echo(f"Date range: {result.get('from_date') or result.get('to_date')} to {result.get('to_date') or result.get('from_date')}")
 
 
-@app.command("sync-vouchers-chunked")
+@command("sync-vouchers-chunked")
 def sync_vouchers_chunked_command(
     company: str = typer.Option(..., help="Exact Tally company name, including FY suffix where applicable."),
     voucher_type: str = typer.Option(..., help="Base voucher type, for example Sales, Purchase, Receipt, Payment."),
@@ -248,7 +277,7 @@ def sync_vouchers_chunked_command(
             typer.echo(f"{result['from_date']}..{result['to_date']}: {result['saved']}")
 
 
-@app.command("sync-vouchers-incremental")
+@command("sync-vouchers-incremental")
 def sync_vouchers_incremental_command(
     company: str = typer.Option(..., help="Exact Tally company name, including FY suffix where applicable."),
     voucher_type: str = typer.Option(..., help="Base voucher type, for example Sales, Purchase, Receipt, Payment."),
@@ -280,7 +309,7 @@ def sync_vouchers_incremental_command(
             typer.echo(f"{result['from_date']}..{result['to_date']}: {result['saved']}")
 
 
-@app.command("profile-vouchers")
+@command("profile-vouchers")
 def profile_vouchers_command(
     company: str = typer.Option(..., help="Exact Tally company name, including FY suffix where applicable."),
     from_date: str = typer.Option(..., help="Inclusive start date in YYYY-MM-DD format."),
@@ -298,7 +327,7 @@ def profile_vouchers_command(
     typer.echo(json.dumps(result, indent=2))
 
 
-@app.command("profile-vouchers-chunked")
+@command("profile-vouchers-chunked")
 def profile_vouchers_chunked_command(
     company: str = typer.Option(..., help="Exact Tally company name, including FY suffix where applicable."),
     from_date: str = typer.Option(..., help="Inclusive start date in YYYY-MM-DD format."),
@@ -324,7 +353,7 @@ def profile_vouchers_chunked_command(
     typer.echo(json.dumps(result, indent=2))
 
 
-@app.command("sync-standard-vouchers")
+@command("sync-standard-vouchers")
 def sync_standard_vouchers_command(
     company: str = typer.Option(..., help="Exact Tally company name, including FY suffix where applicable."),
     continue_on_error: bool = typer.Option(False, help="Continue even if one voucher family fails."),
@@ -344,7 +373,7 @@ def sync_standard_vouchers_command(
             typer.echo(f"{result['voucher_type']}: {result['saved']}")
 
 
-@app.command("sync-profiled-vouchers")
+@command("sync-profiled-vouchers")
 def sync_profiled_vouchers_command(
     company: str = typer.Option(..., help="Exact Tally company name, including FY suffix where applicable."),
     from_date: str = typer.Option(..., help="Inclusive start date in YYYY-MM-DD format."),
@@ -376,7 +405,59 @@ def sync_profiled_vouchers_command(
     typer.echo(json.dumps(result, indent=2))
 
 
-@app.command("sync-all")
+@command("profile-company-family")
+def profile_company_family_command(
+    selector: str = typer.Option(..., help="Either an exact company name or the shared business stem without the FY suffix."),
+    chunk_days: int = typer.Option(31, help="Chunk size in days."),
+    adaptive: bool = typer.Option(True, help="Automatically split failed date windows into smaller windows."),
+    min_chunk_days: int = typer.Option(1, help="Smallest window size to try when adaptive splitting is enabled."),
+    continue_on_error: bool = typer.Option(False, help="Continue even if one company or date window fails."),
+) -> None:
+    init_db()
+    with _tally_client() as client, get_session() as session:
+        result = profile_company_family_vouchers(
+            session,
+            client,
+            selector=selector,
+            chunk_days=chunk_days,
+            adaptive=adaptive,
+            min_chunk_days=min_chunk_days,
+            continue_on_error=continue_on_error,
+        )
+    typer.echo(json.dumps(result, indent=2))
+
+
+@command("sync-company-family")
+def sync_company_family_command(
+    selector: str = typer.Option(..., help="Either an exact company name or the shared business stem without the FY suffix."),
+    chunk_days: int = typer.Option(31, help="Chunk size in days."),
+    include_standard: bool = typer.Option(True, help="Include standard voucher base types."),
+    include_custom: bool = typer.Option(True, help="Include custom or non-standard voucher base types."),
+    min_count: int = typer.Option(1, help="Only sync profiled voucher types seen at least this many times."),
+    continue_on_error: bool = typer.Option(False, help="Continue even if one company or voucher family fails."),
+    adaptive: bool = typer.Option(True, help="Automatically split failed date windows into smaller windows."),
+    min_chunk_days: int = typer.Option(1, help="Smallest window size to try when adaptive splitting is enabled."),
+    sync_masters_for_each_company: bool = typer.Option(False, help="Also run master sync for every matched company before voucher sync."),
+) -> None:
+    init_db()
+    with _tally_client() as client, get_session() as session:
+        result = sync_company_family(
+            session,
+            client,
+            selector=selector,
+            chunk_days=chunk_days,
+            include_standard=include_standard,
+            include_custom=include_custom,
+            min_count=min_count,
+            continue_on_error=continue_on_error,
+            adaptive=adaptive,
+            min_chunk_days=min_chunk_days,
+            sync_masters_for_each_company=sync_masters_for_each_company,
+        )
+    typer.echo(json.dumps(result, indent=2))
+
+
+@command("sync-all")
 def sync_all(
     company: str = typer.Option(..., help="Exact Tally company name, including FY suffix where applicable."),
     continue_on_error: bool = typer.Option(False, help="Continue even if one voucher family fails."),
@@ -399,7 +480,7 @@ def sync_all(
             typer.echo(f"{result['voucher_type']}: {result['saved']}")
 
 
-@app.command("report")
+@command("report")
 def report() -> None:
     init_db()
     with get_session() as session:
@@ -407,7 +488,7 @@ def report() -> None:
     typer.echo(json.dumps(result, indent=2))
 
 
-@app.command("support-bundle")
+@command("support-bundle")
 def support_bundle(
     output_directory: str = typer.Option("./support-bundles", help="Directory where the support bundle should be created."),
     include_payload_bodies: bool = typer.Option(False, help="Include full request and response XML in the bundle."),
@@ -426,7 +507,7 @@ def support_bundle(
     typer.echo(json.dumps(result, indent=2))
 
 
-@app.command("prune-payloads")
+@command("prune-payloads")
 def prune_payloads(
     keep_latest: int = typer.Option(100, help="How many recent payloads to keep."),
     request_type: Optional[str] = typer.Option(default=None, help="Optional request type filter."),
@@ -443,7 +524,7 @@ def prune_payloads(
     typer.echo(json.dumps(result, indent=2))
 
 
-@app.command("replay-xml")
+@command("replay-xml")
 def replay_xml(
     kind: str = typer.Option(
         ...,
@@ -458,7 +539,7 @@ def replay_xml(
     typer.echo(json.dumps(result, indent=2))
 
 
-@app.command("replay-bundle")
+@command("replay-bundle")
 def replay_bundle(
     directory: str = typer.Option(..., help="Directory containing saved Tally XML exports."),
     company: str = typer.Option(..., help="Exact company name for voucher replay within the bundle."),

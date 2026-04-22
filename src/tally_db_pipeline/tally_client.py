@@ -334,9 +334,9 @@ class TallyClient:
             "<SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>",
         ]
         if from_date:
-            static_variables.append(f'<SVFROMDATE TYPE="Date">{_xml(_format_tally_date(from_date))}</SVFROMDATE>')
+            static_variables.append(f'<SVFROMDATE TYPE="Date">{_xml(_format_tally_report_date(from_date))}</SVFROMDATE>')
         if to_date:
-            static_variables.append(f'<SVTODATE TYPE="Date">{_xml(_format_tally_date(to_date))}</SVTODATE>')
+            static_variables.append(f'<SVTODATE TYPE="Date">{_xml(_format_tally_report_date(to_date))}</SVTODATE>')
 
         tdl = ""
         if voucher_type:
@@ -399,6 +399,11 @@ def _tdl_string(value: str) -> str:
 def _format_tally_date(raw: str) -> str:
     parsed = _coerce_date(raw)
     return f"{parsed.day}-{_MONTH_ABBR[parsed.month - 1]}-{parsed.year}"
+
+
+def _format_tally_report_date(raw: str) -> str:
+    parsed = _coerce_date(raw)
+    return parsed.strftime("%Y%m%d")
 
 
 def _coerce_date(raw: str) -> date:

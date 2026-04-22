@@ -64,6 +64,8 @@ STANDARD_BASE_VOUCHER_TYPES = set(STANDARD_VOUCHER_TYPES) | {
     "Payroll",
 }
 
+_COMPANY_FY_SUFFIX_RE = re.compile(r"^(?P<stem>.*?)(?:\s*-\s*(?P<start>20\d{2})\s*-\s*(?P<end>\d{2,4}))$")
+
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
 
@@ -171,11 +173,114 @@ def _format_iso_date(value: datetime) -> str:
 
 
 def infer_company_fiscal_year_start(company_name: str) -> str | None:
-    match = re.search(r"(20\d{2})\s*-\s*(\d{2,4})$", company_name.strip())
-    if not match:
+    parsed = parse_company_name_metadata(company_name)
+    if not parsed or parsed.get("start_year") is None:
         return None
-    start_year = int(match.group(1))
+    start_year = int(parsed["start_year"])
     return f"{start_year}-04-01"
+
+
+def infer_company_fiscal_year_end(company_name: str) -> str | None:
+    parsed = parse_company_name_metadata(company_name)
+    if not parsed or parsed.get("start_year") is None:
+        return None
+    start_year = int(parsed["start_year"])
+    return f"{start_year + 1}-03-31"
+
+
+def parse_company_name_metadata(company_name: str) -> dict:
+    raw_name = " ".join((company_name or "").strip().split())
+    match = _COMPANY_FY_SUFFIX_RE.match(raw_name)
+    if not match:
+        return {
+            "name": raw_name,
+            "stem": raw_name,
+            "normalized_stem": _normalize_company_stem(raw_name),
+            "has_fiscal_suffix": False,
+            "start_year": None,
+            "end_year": None,
+            "inferred_start_date": None,
+            "inferred_end_date": None,
+        }
+
+    start_year = int(match.group("start"))
+    end_year_raw = match.group("end")
+    end_year = int(end_year_raw)
+    if end_year < 100:
+        end_year += (start_year // 100) * 100
+    stem = " ".join(match.group("stem").split())
+    return {
+        "name": raw_name,
+        "stem": stem,
+        "normalized_stem": _normalize_company_stem(stem),
+        "has_fiscal_suffix": True,
+        "start_year": start_year,
+        "end_year": end_year,
+        "inferred_start_date": f"{start_year}-04-01",
+        "inferred_end_date": f"{start_year + 1}-03-31",
+    }
+
+
+def _normalize_company_stem(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip()).casefold()
+
+
+def summarize_company_families(company_names: list[str]) -> list[dict]:
+    grouped: dict[str, dict] = {}
+    for name in company_names:
+        metadata = parse_company_name_metadata(name)
+        family = grouped.setdefault(
+            metadata["normalized_stem"],
+            {
+                "stem": metadata["stem"],
+                "normalized_stem": metadata["normalized_stem"],
+                "company_count": 0,
+                "companies": [],
+            },
+        )
+        family["companies"].append(metadata)
+
+    families = list(grouped.values())
+    for family in families:
+        family["companies"].sort(
+            key=lambda row: (
+                row["start_year"] is None,
+                row["start_year"] or 0,
+                row["name"],
+            )
+        )
+        family["company_count"] = len(family["companies"])
+        family["fiscal_years"] = [
+            f"{row['start_year']}-{str(row['end_year'])[-2:]}"
+            for row in family["companies"]
+            if row["start_year"] is not None and row["end_year"] is not None
+        ]
+    families.sort(key=lambda row: (-row["company_count"], row["stem"]))
+    return families
+
+
+def resolve_company_family(company_names: list[str], selector: str) -> list[dict]:
+    selector_meta = parse_company_name_metadata(selector)
+    selector_name = selector_meta["name"]
+    selector_stem = selector_meta["normalized_stem"]
+    exact_matches = [parse_company_name_metadata(name) for name in company_names if name == selector_name]
+    if exact_matches and exact_matches[0]["has_fiscal_suffix"]:
+        return [
+            row
+            for row in (parse_company_name_metadata(name) for name in company_names)
+            if row["normalized_stem"] == selector_stem
+        ]
+    if exact_matches:
+        return exact_matches
+
+    family_matches = [
+        row
+        for row in (parse_company_name_metadata(name) for name in company_names)
+        if row["normalized_stem"] == selector_stem
+    ]
+    if family_matches:
+        return family_matches
+    raise ValueError(f"No visible Tally companies matched selector: {selector}")
 
 
 def _next_day(raw: str) -> str:
@@ -216,6 +321,43 @@ def _split_window(start_date: str, end_date: str) -> tuple[tuple[str, str], tupl
     first_end = _format_iso_date(midpoint)
     second_start = _next_day(first_end)
     return ((start_date, first_end), (second_start, end_date))
+
+
+def _validate_voucher_dates_within_range(vouchers: list[dict], from_date: str | None, to_date: str | None) -> None:
+    if not vouchers or (from_date is None and to_date is None):
+        return
+
+    start = _parse_iso_date(from_date) if from_date else None
+    end = _parse_iso_date(to_date) if to_date else None
+    out_of_range: list[str] = []
+    missing_dates = 0
+    for row in vouchers:
+        raw_date = row.get("voucher_date")
+        if not raw_date:
+            missing_dates += 1
+            continue
+        parsed = _parse_iso_date(raw_date)
+        if start and parsed < start:
+            out_of_range.append(raw_date)
+            continue
+        if end and parsed > end:
+            out_of_range.append(raw_date)
+
+    if missing_dates or out_of_range:
+        details: list[str] = []
+        if out_of_range:
+            unique_dates = sorted(set(out_of_range))
+            sample = ", ".join(unique_dates[:5])
+            if len(unique_dates) > 5:
+                sample += ", ..."
+            details.append(f"out-of-range dates: {sample}")
+        if missing_dates:
+            details.append(f"missing dates: {missing_dates}")
+        requested = f"{from_date or '?'}..{to_date or '?'}"
+        raise RuntimeError(
+            "Tally returned voucher rows outside the requested date window "
+            f"({requested}); refusing to treat this as a valid chunked/incremental response ({'; '.join(details)})."
+        )
 
 
 def _get_checkpoint(session: Session, *, entity_type: str, company_name: str | None) -> SyncCheckpoint | None:
@@ -280,6 +422,7 @@ def discover_tally(client: TallyClient, company_name: str | None = None) -> dict
 
     companies = parse_company_collection(connection["response_xml"])
     company_names = [row["name"] for row in companies if row["name"]]
+    company_families = summarize_company_families(company_names)
     warnings: list[str] = []
     recommended_actions: list[str] = []
     tests: dict[str, dict] = {}
@@ -377,6 +520,7 @@ def discover_tally(client: TallyClient, company_name: str | None = None) -> dict
         "connected": True,
         "base_url": client.base_url,
         "companies": company_names,
+        "company_families": company_families,
         "warnings": warnings,
         "health_status": health_status,
         "recommended_actions": _dedupe_preserve_order(recommended_actions),
@@ -464,6 +608,10 @@ def build_bootstrap_plan(client: TallyClient, company_name: str | None = None) -
         plan.append("Fix connectivity or timeout issues before attempting sync commands.")
     else:
         plan.append("Run `tally-db-pipeline list-companies` to confirm the exact visible company names.")
+        if discovery.get("company_families"):
+            multi_year_families = [row for row in discovery["company_families"] if row["company_count"] > 1]
+            if multi_year_families:
+                plan.append("Run `tally-db-pipeline list-company-families` to inspect separate fiscal-year company variants.")
         if resolved_company:
             plan.append(f"Run `tally-db-pipeline doctor --company \"{resolved_company}\"` to confirm voucher and master-data access.")
             plan.append(f"Run `tally-db-pipeline sync-voucher-types --company \"{resolved_company}\"`.")
@@ -474,6 +622,11 @@ def build_bootstrap_plan(client: TallyClient, company_name: str | None = None) -
                 plan.append(
                     f"Run `tally-db-pipeline sync-vouchers-incremental --company \"{resolved_company}\" --voucher-type Sales --chunk-days 31` after initial profile/testing."
                 )
+                resolved_meta = parse_company_name_metadata(resolved_company)
+                if resolved_meta.get("has_fiscal_suffix"):
+                    plan.append(
+                        f"Run `tally-db-pipeline sync-company-family --selector \"{resolved_meta['stem']}\" --continue-on-error` to walk all visible fiscal-year company variants for that business."
+                    )
             else:
                 plan.append(
                     f"Run `tally-db-pipeline profile-vouchers --company \"{resolved_company}\" --from-date YYYY-MM-DD --to-date YYYY-MM-DD` once you know the useful date range."
@@ -487,6 +640,57 @@ def build_bootstrap_plan(client: TallyClient, company_name: str | None = None) -
         "inferred_start_date": inferred_start,
         "discovery": discovery,
         "plan": plan,
+    }
+
+
+def _discover_company_names(client: TallyClient) -> list[str]:
+    payload = client.execute("companies", client.build_company_collection_xml())
+    companies = parse_company_collection(payload["response_xml"])
+    return [row["name"] for row in companies if row["name"]]
+
+
+def list_company_families(client: TallyClient) -> dict:
+    company_names = _discover_company_names(client)
+    return {
+        "base_url": client.base_url,
+        "companies": company_names,
+        "company_families": summarize_company_families(company_names),
+    }
+
+
+def _bounded_company_date_range(company_name: str) -> tuple[str | None, str | None]:
+    start_date = infer_company_fiscal_year_start(company_name)
+    end_date = datetime.utcnow().strftime("%Y-%m-%d")
+    if start_date and start_date > end_date:
+        end_date = start_date
+    return start_date, end_date
+
+
+def _summarize_window_results(results: list[dict]) -> dict:
+    attempted = len(results)
+    failed = sum(1 for row in results if row.get("error"))
+    succeeded = attempted - failed
+    zero_saved = sum(1 for row in results if not row.get("error") and row.get("saved", 0) == 0)
+    return {
+        "attempted": attempted,
+        "succeeded": succeeded,
+        "failed": failed,
+        "zero_saved": zero_saved,
+        "total_saved": sum(row.get("saved", 0) for row in results if not row.get("error")),
+    }
+
+
+def _summarize_profiled_sync_results(results: list[dict]) -> dict:
+    attempted = len(results)
+    failed = sum(1 for row in results if row.get("error"))
+    succeeded = attempted - failed
+    zero_saved = sum(1 for row in results if not row.get("error") and row.get("saved", 0) == 0)
+    return {
+        "attempted_voucher_types": attempted,
+        "successful_voucher_types": succeeded,
+        "failed_voucher_types": failed,
+        "zero_saved_voucher_types": zero_saved,
+        "total_saved": sum(row.get("saved", 0) for row in results if not row.get("error")),
     }
 
 
@@ -690,6 +894,7 @@ def sync_vouchers(
         if line_error:
             raise RuntimeError(line_error)
         vouchers = parse_vouchers(payload["response_xml"])
+        _validate_voucher_dates_within_range(vouchers, from_date, to_date)
 
         saved = 0
         latest_marker = None
@@ -923,6 +1128,7 @@ def profile_vouchers(
             for row in session.scalars(select(VoucherType)).all()
         ]
         vouchers = parse_vouchers(payload["response_xml"])
+        _validate_voucher_dates_within_range(vouchers, from_date, to_date)
         by_type: dict[str, dict] = {}
         for row in vouchers:
             name = row["voucher_type_name"] or "unknown"
@@ -1081,6 +1287,7 @@ def profile_vouchers_in_chunks(
                 raise
 
     voucher_types = sorted(aggregate.values(), key=lambda row: (-row["count"], row["voucher_type_name"]))
+    failed_windows = sum(1 for row in windows if row.get("error"))
     return {
         "company_name": company_name,
         "from_date": start_date,
@@ -1088,6 +1295,11 @@ def profile_vouchers_in_chunks(
         "total_vouchers": sum(item["count"] for item in voucher_types),
         "voucher_types": voucher_types,
         "windows": windows,
+        "window_summary": {
+            "attempted": len(windows),
+            "failed": failed_windows,
+            "succeeded": len(windows) - failed_windows,
+        },
     }
 
 
@@ -1198,6 +1410,185 @@ def sync_profiled_vouchers(
         "recommended_voucher_types": recommended_types,
         "profile": profile_result,
         "results": results,
+        "summary": _summarize_profiled_sync_results(results),
+    }
+
+
+def profile_company_family_vouchers(
+    session: Session,
+    client: TallyClient,
+    *,
+    selector: str,
+    chunk_days: int = 31,
+    adaptive: bool = True,
+    min_chunk_days: int = 1,
+    continue_on_error: bool = False,
+) -> dict:
+    company_names = _discover_company_names(client)
+    family = resolve_company_family(company_names, selector)
+    family.sort(key=lambda row: (row["start_year"] is None, row["start_year"] or 0, row["name"]))
+
+    companies: list[dict] = []
+    aggregate: dict[str, dict] = {}
+    for company in family:
+        from_date, to_date = _bounded_company_date_range(company["name"])
+        if not from_date or not to_date:
+            item = {
+                "company_name": company["name"],
+                "stem": company["stem"],
+                "from_date": from_date,
+                "to_date": to_date,
+                "error": "Could not infer fiscal-year date range from company name. Use single-company profiling for this company.",
+            }
+            companies.append(item)
+            if not continue_on_error:
+                raise ValueError(item["error"])
+            continue
+
+        try:
+            result = profile_vouchers_in_chunks(
+                session,
+                client,
+                company_name=company["name"],
+                start_date=from_date,
+                end_date=to_date,
+                chunk_days=chunk_days,
+                adaptive=adaptive,
+                min_chunk_days=min_chunk_days,
+                continue_on_error=continue_on_error,
+            )
+            companies.append(result)
+            for row in result["voucher_types"]:
+                aggregate_row = aggregate.setdefault(
+                    row["voucher_type_name"],
+                    {
+                        "voucher_type_name": row["voucher_type_name"],
+                        "base_voucher_type": row["base_voucher_type"],
+                        "count": 0,
+                        "first_date": None,
+                        "last_date": None,
+                        "companies": [],
+                    },
+                )
+                aggregate_row["count"] += row["count"]
+                if row["first_date"] and (aggregate_row["first_date"] is None or row["first_date"] < aggregate_row["first_date"]):
+                    aggregate_row["first_date"] = row["first_date"]
+                if row["last_date"] and (aggregate_row["last_date"] is None or row["last_date"] > aggregate_row["last_date"]):
+                    aggregate_row["last_date"] = row["last_date"]
+                aggregate_row["companies"].append(
+                    {
+                        "company_name": company["name"],
+                        "count": row["count"],
+                        "first_date": row["first_date"],
+                        "last_date": row["last_date"],
+                    }
+                )
+        except Exception as exc:
+            item = {
+                "company_name": company["name"],
+                "stem": company["stem"],
+                "from_date": from_date,
+                "to_date": to_date,
+                "error": str(exc),
+            }
+            companies.append(item)
+            if not continue_on_error:
+                raise
+
+    aggregate_voucher_types = sorted(aggregate.values(), key=lambda row: (-row["count"], row["voucher_type_name"]))
+    successful_companies = [row for row in companies if not row.get("error")]
+    return {
+        "selector": selector,
+        "family_stem": family[0]["stem"] if family else selector,
+        "company_count": len(family),
+        "companies": companies,
+        "voucher_types": aggregate_voucher_types,
+        "summary": {
+            "attempted_companies": len(companies),
+            "successful_companies": len(successful_companies),
+            "failed_companies": sum(1 for row in companies if row.get("error")),
+            "total_vouchers": sum(row.get("total_vouchers", 0) for row in successful_companies),
+        },
+    }
+
+
+def sync_company_family(
+    session: Session,
+    client: TallyClient,
+    *,
+    selector: str,
+    chunk_days: int = 31,
+    include_standard: bool = True,
+    include_custom: bool = True,
+    min_count: int = 1,
+    continue_on_error: bool = False,
+    adaptive: bool = True,
+    min_chunk_days: int = 1,
+    sync_masters_for_each_company: bool = False,
+) -> dict:
+    company_names = _discover_company_names(client)
+    family = resolve_company_family(company_names, selector)
+    family.sort(key=lambda row: (row["start_year"] is None, row["start_year"] or 0, row["name"]))
+
+    companies: list[dict] = []
+    total_saved = 0
+    for company in family:
+        from_date, to_date = _bounded_company_date_range(company["name"])
+        if not from_date or not to_date:
+            item = {
+                "company_name": company["name"],
+                "stem": company["stem"],
+                "error": "Could not infer fiscal-year date range from company name. Use single-company sync commands for this company.",
+            }
+            companies.append(item)
+            if not continue_on_error:
+                raise ValueError(item["error"])
+            continue
+
+        try:
+            if sync_masters_for_each_company:
+                sync_masters(session, client, company_name=company["name"])
+            sync_voucher_types(session, client, company_name=company["name"])
+            result = sync_profiled_vouchers(
+                session,
+                client,
+                company_name=company["name"],
+                start_date=from_date,
+                end_date=to_date,
+                chunk_days=chunk_days,
+                include_standard=include_standard,
+                include_custom=include_custom,
+                min_count=min_count,
+                continue_on_error=continue_on_error,
+                adaptive=adaptive,
+                min_chunk_days=min_chunk_days,
+            )
+            total_saved += result["summary"]["total_saved"]
+            companies.append(result)
+        except Exception as exc:
+            item = {
+                "company_name": company["name"],
+                "stem": company["stem"],
+                "from_date": from_date,
+                "to_date": to_date,
+                "error": str(exc),
+            }
+            companies.append(item)
+            if not continue_on_error:
+                raise
+
+    successful_companies = [row for row in companies if not row.get("error")]
+    return {
+        "selector": selector,
+        "family_stem": family[0]["stem"] if family else selector,
+        "company_count": len(family),
+        "companies": companies,
+        "summary": {
+            "attempted_companies": len(companies),
+            "successful_companies": len(successful_companies),
+            "failed_companies": sum(1 for row in companies if row.get("error")),
+            "total_saved": total_saved,
+        },
     }
 
 

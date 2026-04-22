@@ -21,6 +21,12 @@ This is deliberate because Tally is fragile under overlapping requests.
 
 The CLI also uses a local lock file so two commands from the same machine do not hit the same Tally instance at once by accident.
 
+Important safety behavior:
+
+- chunked, incremental, and profiled voucher commands validate that voucher dates returned by Tally stay inside the requested date window
+- if Tally returns out-of-range voucher dates, the command fails instead of silently writing incorrect history
+- some Tally installs appear to ignore or behave inconsistently with Day Book date variables, so this guard is intentional
+
 ## What this repo does
 
 - connects directly to TallyPrime over its HTTP/XML interface
@@ -274,6 +280,7 @@ This returns compact JSON showing:
 
 - whether Tally is reachable
 - which companies are visible
+- grouped company families for FY-suffixed company names
 - warnings if Tally looks unhealthy or no companies are exposed
 
 If you already know the exact company name, you can probe voucher-type access too:
@@ -327,6 +334,18 @@ Shanke Pvt Ltd - 2025-26
 ```
 
 Copy that value exactly.
+
+If the customer keeps each financial year as a separate visible company, inspect the grouped variants too:
+
+```bash
+tally-db-pipeline list-company-families
+```
+
+This groups names such as:
+
+- `Shanke Pvt Ltd - 2023-24`
+- `Shanke Pvt Ltd - 2024-25`
+- `Shanke Pvt Ltd - 2025-26`
 
 ## Step 12: Initialize the database
 
@@ -468,6 +487,8 @@ For larger profiling ranges, use the chunked profiler:
 tally-db-pipeline profile-vouchers-chunked --company "Shanke Pvt Ltd - 2025-26" --from-date 2025-04-01 --to-date 2026-03-31 --chunk-days 31
 ```
 
+If a chunked or profiled command fails with an out-of-range date-window error, do not trust historical or incremental voucher sync on that Tally instance yet. That means Tally is not honoring the requested range reliably enough for safe chunking.
+
 If the customer uses a mix of standard and non-standard voucher families, sync whatever the profiler actually finds:
 
 ```bash
@@ -475,6 +496,35 @@ tally-db-pipeline sync-profiled-vouchers --company "Shanke Pvt Ltd - 2025-26" --
 ```
 
 This also works for exact non-standard voucher type names discovered from Tally, not just the built-in accounting families.
+
+The output includes a summary of how many voucher families were attempted, failed, or saved zero rows.
+
+If the customer keeps each financial year as a separate visible company, you can profile or sync the whole family:
+
+```bash
+tally-db-pipeline profile-company-family --selector "Shanke Pvt Ltd" --continue-on-error
+```
+
+```bash
+tally-db-pipeline sync-company-family --selector "Shanke Pvt Ltd" --continue-on-error
+```
+
+The selector can be either:
+
+- the shared business stem without the FY suffix
+- one exact company name with the suffix
+
+These commands:
+
+- discover the matching visible companies
+- infer a start date from the FY suffix when possible
+- profile or sync each company variant in sequence
+- include custom/non-standard voucher families too
+
+Current limitation:
+
+- voucher rows are company-scoped, but master tables are not yet company-scoped in the local schema
+- if multiple companies have colliding master names, master rows can still overwrite each other
 
 ## Step 16: Run the standard full sync
 

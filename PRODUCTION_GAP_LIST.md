@@ -12,6 +12,7 @@ This file is intentionally adversarial. Items stay here until the repo can eithe
 - Voucher sync can work once and later hang or time out.
 - Overlapping requests are risky; Tally behaves like a fragile single-threaded server.
 - Large report/data exports are more failure-prone than small collection probes.
+- Some Tally instances appear to ignore Day Book date windows even when `SVFROMDATE` / `SVTODATE` are supplied.
 
 ## Test assets available locally
 
@@ -40,11 +41,11 @@ This file is intentionally adversarial. Items stay here until the repo can eithe
     - partial-window retries need stronger resume semantics
 
 - Chunked voucher extraction.
-  - Current state: date-window chunking exists for voucher pulls.
+  - Current state: date-window chunking exists for voucher pulls, and the repo now refuses to accept a chunk response if voucher dates fall outside the requested window.
   - Remaining gaps:
     - chunk sizing starts static but now supports adaptive window splitting on failure
     - no response-size-aware tuning yet
-    - no automatic company fiscal-year discovery beyond company-name inference yet
+    - no alternative range-safe extraction path yet for installs where Day Book ignores or stalls on date variables
 
 - XML-safe request construction.
   - Current state: dynamic XML values are now escaped before sending requests.
@@ -54,6 +55,11 @@ This file is intentionally adversarial. Items stay here until the repo can eithe
 - Clear separation between discovery-safe requests and heavy extraction requests.
   - Current state: some probes can still be too heavy if we are careless.
   - Needed: strict fast probes for diagnostics.
+
+- Date-range correctness for voucher exports.
+  - Current state: profiled/chunked voucher commands now validate that returned voucher dates actually stay inside the requested window.
+  - Remaining gaps:
+    - still need a second deterministic extraction path for Tally builds where Day Book does not honor the date variables reliably
 
 - Accidental local concurrency.
   - Current state: Tally-facing CLI commands use a local lock file to prevent overlapping commands from the same machine.
@@ -78,10 +84,17 @@ This file is intentionally adversarial. Items stay here until the repo can eithe
   - Needed: repeatable test matrix over all saved XML files.
 
 - Voucher-family profiling.
-  - Current state: `profile-vouchers` and `profile-vouchers-chunked` can inspect a date range and summarize voucher types seen in Day Book output, and `sync-profiled-vouchers` can use that profile to drive extraction.
+  - Current state: `profile-vouchers` and `profile-vouchers-chunked` can inspect a date range and summarize voucher types seen in Day Book output, `sync-profiled-vouchers` can use that profile to drive extraction, and company-family profiling/sync now exists for separate FY-suffixed companies.
   - Remaining gaps:
-    - no fiscal-year auto-discovery
-    - no company-wide auto-walk across multiple fiscal years yet
+    - fiscal-year inference is still based on company-name suffixes
+    - company-family workflows still depend on the same date-range extraction path, so they correctly fail if Tally does not honor date windows
+
+- Cross-company master scoping.
+  - Current state: voucher rows are company-scoped, but master tables are still globally keyed by name.
+  - Risk:
+    - a customer with multiple companies or fiscal-year variants can overwrite master rows with the same names
+  - Needed:
+    - company-scoped master tables plus a migration path
 
 - Unknown/custom structure preservation.
   - Current state: unknown/custom voucher child sections are preserved per voucher in `voucher_unknown_sections`.
@@ -128,7 +141,7 @@ This file is intentionally adversarial. Items stay here until the repo can eithe
 
 ## Immediate next implementation targets
 
-1. Add sync-state/checkpoint tables for incremental voucher sync.
-2. Add chunked voucher extraction strategy.
+1. Add an alternative range-safe voucher extraction path for installs where Day Book ignores date filters.
+2. Add company-scoped master storage and migration handling.
 3. Add replay-based regression scripts over saved XML exports.
 4. Add richer discovery/profile commands for voucher families in use.
