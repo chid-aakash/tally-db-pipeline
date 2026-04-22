@@ -84,7 +84,11 @@ def discover(company: Optional[str] = typer.Option(default=None, help="Exact com
 def doctor(company: Optional[str] = typer.Option(default=None, help="Exact company name for voucher-type diagnostics.")) -> None:
     result = discover_tally(_client(), company_name=company)
     if not result["connected"]:
+        companies_test = result["tests"].get("companies", {})
         typer.echo(f"FAIL: {result['warnings'][0]}", err=True)
+        if companies_test:
+            typer.echo(f"Company probe error kind: {companies_test.get('error_kind')}", err=True)
+            typer.echo(f"Company probe duration ms: {companies_test.get('duration_ms')}", err=True)
         raise typer.Exit(code=1)
 
     typer.echo(f"Connected to {result['base_url']}")
@@ -95,13 +99,33 @@ def doctor(company: Optional[str] = typer.Option(default=None, help="Exact compa
     companies_test = result["tests"].get("companies", {})
     typer.echo(f"Company discovery ok: {companies_test.get('ok', False)}")
     typer.echo(f"Company discovery count: {companies_test.get('count', 0)}")
+    if companies_test.get("duration_ms") is not None:
+        typer.echo(f"Company discovery duration ms: {companies_test.get('duration_ms')}")
+    if companies_test.get("error_kind"):
+        typer.echo(f"Company discovery error kind: {companies_test.get('error_kind')}")
 
     voucher_types = result["tests"].get("voucher_types")
     if voucher_types is not None:
         typer.echo(f"Voucher-type probe ok: {voucher_types.get('ok', False)}")
         typer.echo(f"Voucher-type count: {voucher_types.get('count', 0)}")
+        if voucher_types.get("duration_ms") is not None:
+            typer.echo(f"Voucher-type probe duration ms: {voucher_types.get('duration_ms')}")
+        if voucher_types.get("error_kind"):
+            typer.echo(f"Voucher-type probe error kind: {voucher_types.get('error_kind')}")
         if voucher_types.get("error"):
             typer.echo(f"Voucher-type error: {voucher_types['error']}")
+
+    masters = result["tests"].get("masters")
+    if masters is not None:
+        typer.echo(f"Master-data probe ok: {masters.get('ok', False)}")
+        typer.echo(f"Master-data group count: {masters.get('group_count', 0)}")
+        typer.echo(f"Master-data ledger count: {masters.get('ledger_count', 0)}")
+        if masters.get("duration_ms") is not None:
+            typer.echo(f"Master-data probe duration ms: {masters.get('duration_ms')}")
+        if masters.get("error_kind"):
+            typer.echo(f"Master-data probe error kind: {masters.get('error_kind')}")
+        if masters.get("error"):
+            typer.echo(f"Master-data error: {masters['error']}")
 
     if result["warnings"]:
         typer.echo("Warnings:")

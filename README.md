@@ -286,6 +286,15 @@ tally-db-pipeline doctor --company "Shanke Pvt Ltd - 2025-26"
 
 Use this when the customer says something vague like "it worked once but not now".
 
+`doctor` now distinguishes:
+
+- `connection_error`
+- `timeout`
+- `line_error`
+- empty company or master-data responses
+
+and prints request durations so you can tell the difference between "cannot reach Tally" and "Tally is reachable but not responding usefully".
+
 ## Step 11: List the available company names
 
 Run:

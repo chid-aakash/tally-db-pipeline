@@ -242,14 +242,22 @@ def sync_companies(session: Session, client: TallyClient) -> list[dict]:
 
 
 def discover_tally(client: TallyClient, company_name: str | None = None) -> dict:
-    connection = client.test_connection()
-    if not connection.get("connected"):
+    connection = client.probe("companies_probe", client.build_company_collection_xml())
+    if not connection.get("ok"):
         return {
             "connected": False,
             "base_url": client.base_url,
             "companies": [],
             "warnings": [connection.get("error", "Connection failed")],
-            "tests": {},
+            "tests": {
+                "companies": {
+                    "ok": False,
+                    "count": 0,
+                    "error": connection.get("error"),
+                    "error_kind": connection.get("error_kind"),
+                    "duration_ms": connection.get("duration_ms"),
+                }
+            },
         }
 
     companies = parse_company_collection(connection["response_xml"])
@@ -260,12 +268,15 @@ def discover_tally(client: TallyClient, company_name: str | None = None) -> dict
     tests["companies"] = {
         "ok": bool(company_names),
         "count": len(company_names),
+        "error": None,
+        "error_kind": None,
+        "duration_ms": connection.get("duration_ms"),
     }
     if not company_names:
         warnings.append("No companies were discoverable from Tally. The active company may not be open or exposed.")
 
     if company_name:
-        voucher_type_payload = client.execute(
+        voucher_type_payload = client.probe(
             "voucher_types_probe",
             client.build_collection_xml(
                 "VoucherTypes",
@@ -274,17 +285,37 @@ def discover_tally(client: TallyClient, company_name: str | None = None) -> dict
                 company=company_name,
             ),
         )
-        voucher_type_error = client.extract_line_error(voucher_type_payload["response_xml"])
-        voucher_type_rows = parse_collection(voucher_type_payload["response_xml"], "Voucher Type")
+        voucher_type_rows = parse_collection(voucher_type_payload["response_xml"], "Voucher Type") if voucher_type_payload.get("response_xml") else []
         tests["voucher_types"] = {
             "ok": bool(voucher_type_rows),
-            "error": voucher_type_error,
+            "error": voucher_type_payload.get("error"),
+            "error_kind": voucher_type_payload.get("error_kind"),
             "count": len(voucher_type_rows),
+            "duration_ms": voucher_type_payload.get("duration_ms"),
         }
-        if voucher_type_error:
-            warnings.append(f"Voucher type probe error for '{company_name}': {voucher_type_error}")
+        if voucher_type_payload.get("error"):
+            warnings.append(f"Voucher type probe error for '{company_name}': {voucher_type_payload['error']}")
         elif not voucher_type_rows:
             warnings.append(f"No voucher types returned for '{company_name}'.")
+
+        masters_probe = client.probe(
+            "masters_probe",
+            client.build_report_xml("List of Accounts", explode=True, company=company_name),
+        )
+        masters_probe_accounts = parse_list_of_accounts(masters_probe["response_xml"]) if masters_probe.get("response_xml") else {"groups": [], "ledgers": []}
+        master_rows = len(masters_probe_accounts["groups"]) + len(masters_probe_accounts["ledgers"])
+        tests["masters"] = {
+            "ok": master_rows > 0 and masters_probe.get("error") is None,
+            "group_count": len(masters_probe_accounts["groups"]),
+            "ledger_count": len(masters_probe_accounts["ledgers"]),
+            "error": masters_probe.get("error"),
+            "error_kind": masters_probe.get("error_kind"),
+            "duration_ms": masters_probe.get("duration_ms"),
+        }
+        if masters_probe.get("error"):
+            warnings.append(f"Master-data probe error for '{company_name}': {masters_probe['error']}")
+        elif master_rows == 0:
+            warnings.append(f"Master-data probe returned zero groups/ledgers for '{company_name}'.")
     else:
         warnings.append("Voucher-type probe skipped because no company name was provided.")
 

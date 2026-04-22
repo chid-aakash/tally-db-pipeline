@@ -73,6 +73,63 @@ class TallyClient:
                 time.sleep((self.retry_backoff_ms / 1000.0) * (attempt + 1))
         raise RuntimeError(str(last_error) if last_error else "Unknown Tally request error")
 
+    def probe(self, request_type: str, request_xml: str) -> dict:
+        started = time.monotonic()
+        try:
+            response_xml = self.post(request_xml)
+            duration_ms = int((time.monotonic() - started) * 1000)
+            line_error = self.extract_line_error(response_xml)
+            return {
+                "ok": line_error is None,
+                "request_type": request_type,
+                "request_xml": request_xml,
+                "response_xml": response_xml,
+                "response_sha256": hashlib.sha256(response_xml.encode("utf-8")).hexdigest(),
+                "line_error": line_error,
+                "error_kind": "line_error" if line_error else None,
+                "error": line_error,
+                "duration_ms": duration_ms,
+            }
+        except requests.Timeout as exc:
+            duration_ms = int((time.monotonic() - started) * 1000)
+            return {
+                "ok": False,
+                "request_type": request_type,
+                "request_xml": request_xml,
+                "response_xml": "",
+                "response_sha256": None,
+                "line_error": None,
+                "error_kind": "timeout",
+                "error": str(exc),
+                "duration_ms": duration_ms,
+            }
+        except requests.ConnectionError as exc:
+            duration_ms = int((time.monotonic() - started) * 1000)
+            return {
+                "ok": False,
+                "request_type": request_type,
+                "request_xml": request_xml,
+                "response_xml": "",
+                "response_sha256": None,
+                "line_error": None,
+                "error_kind": "connection_error",
+                "error": str(exc),
+                "duration_ms": duration_ms,
+            }
+        except Exception as exc:
+            duration_ms = int((time.monotonic() - started) * 1000)
+            return {
+                "ok": False,
+                "request_type": request_type,
+                "request_xml": request_xml,
+                "response_xml": "",
+                "response_sha256": None,
+                "line_error": None,
+                "error_kind": "unexpected_error",
+                "error": str(exc),
+                "duration_ms": duration_ms,
+            }
+
     def _wait_before_next_request(self) -> None:
         now = time.monotonic()
         if self._last_request_started_at:

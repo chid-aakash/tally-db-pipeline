@@ -56,8 +56,10 @@ This file is intentionally adversarial. Items stay here until the repo can eithe
   - Needed: strict fast probes for diagnostics.
 
 - Strong failure semantics for “reachable but unusable” Tally states.
-  - Current state: better than before, but still not complete.
-  - Needed: explicit operator-facing errors for no-company, no-data, stale UI context, and timeouts.
+  - Current state: `discover` and `doctor` now surface request durations and classify `connection_error`, `timeout`, `line_error`, and empty-data responses.
+  - Remaining gaps:
+    - no automatic remediation suggestions yet beyond docs
+    - no probe history/trend view yet
 
 ## High
 
