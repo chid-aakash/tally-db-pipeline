@@ -551,6 +551,12 @@ Human-readable diagnostics:
 tally-db-pipeline doctor --company "Exact Company Name"
 ```
 
+Bootstrap plan for a new customer environment:
+
+```bash
+tally-db-pipeline bootstrap
+```
+
 List companies:
 
 ```bash

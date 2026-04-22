@@ -10,6 +10,7 @@ from .db import get_session
 from .parsers import parse_company_collection
 from .sync import (
     STANDARD_VOUCHER_TYPES,
+    build_bootstrap_plan,
     create_support_bundle,
     discover_tally,
     get_database_report,
@@ -132,6 +133,12 @@ def doctor(company: Optional[str] = typer.Option(default=None, help="Exact compa
         typer.echo("Warnings:")
         for warning in result["warnings"]:
             typer.echo(f"- {warning}")
+
+
+@app.command("bootstrap")
+def bootstrap(company: Optional[str] = typer.Option(default=None, help="Exact company name if already known.")) -> None:
+    result = build_bootstrap_plan(_client(), company_name=company)
+    typer.echo(json.dumps(result, indent=2))
 
 
 @app.command("sync-companies")

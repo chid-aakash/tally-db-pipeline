@@ -329,6 +329,44 @@ def discover_tally(client: TallyClient, company_name: str | None = None) -> dict
     }
 
 
+def build_bootstrap_plan(client: TallyClient, company_name: str | None = None) -> dict:
+    discovery = discover_tally(client, company_name=company_name)
+    resolved_company = company_name
+    if not resolved_company and len(discovery["companies"]) == 1:
+        resolved_company = discovery["companies"][0]
+
+    inferred_start = infer_company_fiscal_year_start(resolved_company) if resolved_company else None
+    plan: list[str] = []
+    if not discovery["connected"]:
+        plan.append("Fix connectivity or timeout issues before attempting sync commands.")
+    else:
+        plan.append("Run `tally-db-pipeline list-companies` to confirm the exact visible company names.")
+        if resolved_company:
+            plan.append(f"Run `tally-db-pipeline doctor --company \"{resolved_company}\"` to confirm voucher and master-data access.")
+            plan.append(f"Run `tally-db-pipeline sync-voucher-types --company \"{resolved_company}\"`.")
+            if inferred_start:
+                plan.append(
+                    f"Run `tally-db-pipeline profile-vouchers-chunked --company \"{resolved_company}\" --from-date {inferred_start} --to-date {datetime.utcnow().strftime('%Y-%m-%d')} --chunk-days 31`."
+                )
+                plan.append(
+                    f"Run `tally-db-pipeline sync-vouchers-incremental --company \"{resolved_company}\" --voucher-type Sales --chunk-days 31` after initial profile/testing."
+                )
+            else:
+                plan.append(
+                    f"Run `tally-db-pipeline profile-vouchers --company \"{resolved_company}\" --from-date YYYY-MM-DD --to-date YYYY-MM-DD` once you know the useful date range."
+                )
+        else:
+            plan.append("Pick one exact company name from `list-companies`, then re-run bootstrap with `--company`.")
+
+    return {
+        "base_url": client.base_url,
+        "resolved_company": resolved_company,
+        "inferred_start_date": inferred_start,
+        "discovery": discovery,
+        "plan": plan,
+    }
+
+
 def sync_masters(session: Session, client: TallyClient, company_name: str | None = None) -> dict:
     run = _start_run(session, "masters", company_name=company_name)
     try:
