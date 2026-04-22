@@ -656,6 +656,12 @@ Include recent raw XML bodies too:
 tally-db-pipeline support-bundle --include-payload-bodies --payload-limit 3
 ```
 
+Include payload bodies with basic redaction for common sensitive fields:
+
+```bash
+tally-db-pipeline support-bundle --include-payload-bodies --redact-payload-bodies --payload-limit 3
+```
+
 Preview raw payload cleanup without deleting anything:
 
 ```bash

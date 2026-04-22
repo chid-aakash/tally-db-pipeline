@@ -82,10 +82,10 @@ This file is intentionally adversarial. Items stay here until the repo can eithe
   - Needed: show which families succeeded, failed, timed out, or returned zero rows.
 
 - Support/debug handoff bundles.
-  - Current state: `support-bundle` exports a local report, settings snapshot, and recent payload metadata.
+  - Current state: `support-bundle` exports a local report, settings snapshot, and recent payload metadata, with optional payload-body redaction.
   - Remaining gaps:
     - no log file rotation yet
-    - no redaction mode for payload bodies yet
+    - redaction is pattern-based and not exhaustive
 
 - Retention or dedupe policy for raw payloads.
   - Current state: operators can prune payload history with `prune-payloads`.

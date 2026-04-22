@@ -1316,6 +1316,7 @@ def create_support_bundle(
     *,
     output_directory: str,
     include_payload_bodies: bool = False,
+    redact_payload_bodies: bool = False,
     payload_limit: int = 5,
 ) -> dict:
     output_dir = Path(output_directory)
@@ -1349,8 +1350,13 @@ def create_support_bundle(
             "response_length": len(row.response_xml or ""),
         }
         if include_payload_bodies:
-            item["request_xml"] = row.request_xml
-            item["response_xml"] = row.response_xml
+            request_xml = row.request_xml
+            response_xml = row.response_xml
+            if redact_payload_bodies:
+                request_xml = _redact_xml(request_xml)
+                response_xml = _redact_xml(response_xml)
+            item["request_xml"] = request_xml
+            item["response_xml"] = response_xml
         recent_payloads.append(item)
 
     (bundle_dir / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
@@ -1366,7 +1372,14 @@ def create_support_bundle(
                 "- settings.json: local runtime settings snapshot",
                 "- recent_payloads.json: recent raw payload metadata",
             ]
-            + (["- recent_payloads.json includes full request/response XML bodies"] if include_payload_bodies else [])
+            + (
+                [
+                    "- recent_payloads.json includes full request/response XML bodies"
+                    + (" with basic redaction applied" if redact_payload_bodies else "")
+                ]
+                if include_payload_bodies
+                else []
+            )
         )
         + "\n",
         encoding="utf-8",
@@ -1377,7 +1390,23 @@ def create_support_bundle(
         "files": ["README.txt", "report.json", "settings.json", "recent_payloads.json"],
         "recent_payload_count": len(recent_payloads),
         "include_payload_bodies": include_payload_bodies,
+        "redact_payload_bodies": redact_payload_bodies,
     }
+
+
+def _redact_xml(text: str) -> str:
+    patterns = [
+        (r"(<(PARTYGSTIN|GSTREGISTRATIONNUMBER|GSTN)>)(.*?)(</\2>)", r"\1[REDACTED]\4"),
+        (r"(<(INCOMETAXNUMBER|PAN|PANNUMBER)>)(.*?)(</\2>)", r"\1[REDACTED]\4"),
+        (r"(<(EMAIL)>)(.*?)(</\2>)", r"\1[REDACTED]\4"),
+        (r"(<(PHONE|LEDGERPHONE|LEDGERMOBILE)>)(.*?)(</\2>)", r"\1[REDACTED]\4"),
+        (r"(<(VOUCHERNUMBER)>)(.*?)(</\2>)", r"\1[REDACTED]\4"),
+        (r"(<(PARTYLEDGERNAME|PARTYNAME|LEDGERNAME|STOCKITEMNAME)>)(.*?)(</\2>)", r"\1[REDACTED]\4"),
+    ]
+    redacted = text
+    for pattern, replacement in patterns:
+        redacted = re.sub(pattern, replacement, redacted, flags=re.IGNORECASE | re.DOTALL)
+    return redacted
 
 
 def count_running_syncs(session: Session) -> int:

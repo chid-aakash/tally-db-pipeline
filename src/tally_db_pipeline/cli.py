@@ -362,6 +362,7 @@ def report() -> None:
 def support_bundle(
     output_directory: str = typer.Option("./support-bundles", help="Directory where the support bundle should be created."),
     include_payload_bodies: bool = typer.Option(False, help="Include full request and response XML in the bundle."),
+    redact_payload_bodies: bool = typer.Option(True, help="Redact common sensitive values when including payload bodies."),
     payload_limit: int = typer.Option(5, help="Number of recent payloads to include."),
 ) -> None:
     init_db()
@@ -370,8 +371,9 @@ def support_bundle(
             session,
             output_directory=output_directory,
             include_payload_bodies=include_payload_bodies,
+            redact_payload_bodies=redact_payload_bodies,
             payload_limit=payload_limit,
-    )
+        )
     typer.echo(json.dumps(result, indent=2))
 
 
