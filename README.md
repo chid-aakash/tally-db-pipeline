@@ -53,7 +53,7 @@ This is deliberate because Tally is fragile under overlapping requests.
 - The machine running this repo can reach the Tally machine over the network.
 - Tally is usually reachable on port `9000`, but that should be confirmed in Tally settings.
 - Voucher sync requires the exact Tally company name, including financial-year suffixes when present.
-- For master-data sync, the target company should already be open inside Tally's UI.
+- For best reliability, keep the target company open inside Tally's UI while syncing.
 
 ## Before you start
 
@@ -356,6 +356,8 @@ This prints a JSON report with:
 ## Step 13: Pull master data
 
 Before running this step, make sure the target company is open in Tally.
+
+This command now uses collection-based pulls for groups and ledgers instead of starting with one heavy exploded `List of Accounts` report. That makes it much more reliable on larger Tally datasets.
 
 Run:
 

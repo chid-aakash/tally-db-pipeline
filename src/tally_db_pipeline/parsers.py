@@ -176,7 +176,57 @@ def parse_collection(xml_string: str | bytes, entity_type: str) -> list[dict]:
     rows: list[dict] = []
 
     for el in root.iter(normalized_type):
-        if normalized_type == "STOCKGROUP":
+        if normalized_type == "GROUP":
+            rows.append(
+                {
+                    "name": _attr(el, "NAME") or _text(el, "NAME"),
+                    "parent": _text(el, "PARENT"),
+                    "guid": _text(el, "GUID"),
+                    "is_revenue": _bool(el, "ISREVENUE"),
+                    "is_deemed_positive": _bool(el, "ISDEEMEDPOSITIVE"),
+                    "affects_gross_profit": _bool(el, "AFFECTSGROSSPROFIT"),
+                    "is_subledger": _bool(el, "ISADDABLE"),
+                }
+            )
+        elif normalized_type == "LEDGER":
+            address_lines: list[str] = []
+            for addr_list in el.iter("ADDRESS.LIST"):
+                for addr in addr_list:
+                    if addr.text and addr.text.strip():
+                        address_lines.append(addr.text.strip())
+
+            mailing_name = _text(el, "MAILINGNAME")
+            if not mailing_name:
+                for old in el.iter("OLDMAILINGNAME.LIST"):
+                    for item in old:
+                        if item.text and item.text.strip():
+                            mailing_name = item.text.strip()
+                            break
+
+            rows.append(
+                {
+                    "name": _attr(el, "NAME") or _text(el, "NAME"),
+                    "parent": _text(el, "PARENT"),
+                    "guid": _text(el, "GUID"),
+                    "opening_balance": _float(el, "OPENINGBALANCE"),
+                    "closing_balance": _float(el, "CLOSINGBALANCE"),
+                    "mailing_name": mailing_name or _attr(el, "NAME") or _text(el, "NAME"),
+                    "address": "\n".join(address_lines),
+                    "state": _text(el, "LEDSTATENAME") or _text(el, "PRIORSTATENAME"),
+                    "country": _text(el, "COUNTRYOFRESIDENCE", "India"),
+                    "pincode": _text(el, "OLDPINCODE") or _text(el, "PINCODE"),
+                    "email": _text(el, "EMAIL"),
+                    "phone": _text(el, "LEDGERPHONE") or _text(el, "LEDGERMOBILE"),
+                    "pan": _text(el, "INCOMETAXNUMBER"),
+                    "gstin": _text(el, "GSTREGISTRATIONNUMBER") or _text(el, "PARTYGSTIN"),
+                    "gst_type": _text(el, "GSTREGISTRATIONTYPE"),
+                    "currency": _text(el, "CURRENCYNAME", "RS"),
+                    "is_bill_wise": _bool(el, "ISBILLWISEON"),
+                    "affects_stock": _bool(el, "AFFECTSSTOCK"),
+                    "created_by": _text(el, "CREATEDBY"),
+                }
+            )
+        elif normalized_type == "STOCKGROUP":
             rows.append({"name": _attr(el, "NAME") or _text(el, "NAME"), "parent": _text(el, "PARENT"), "guid": _text(el, "GUID")})
         elif normalized_type == "STOCKITEM":
             rows.append(

@@ -312,23 +312,40 @@ def discover_tally(client: TallyClient, company_name: str | None = None) -> dict
             warnings.append(f"No voucher types returned for '{company_name}'.")
             recommended_actions.append("Run `tally-db-pipeline sync-voucher-types --company \"Exact Company Name\"` only after verifying the company is fully loaded in Tally.")
 
-        masters_probe = client.probe(
-            "masters_probe",
-            client.build_report_xml("List of Accounts", explode=True, company=company_name),
+        groups_probe = client.probe(
+            "groups_probe",
+            client.build_collection_xml(
+                "GroupsProbe",
+                "Group",
+                fields=["Name", "Parent", "GUID"],
+                company=company_name,
+            ),
         )
-        masters_probe_accounts = parse_list_of_accounts(masters_probe["response_xml"]) if masters_probe.get("response_xml") else {"groups": [], "ledgers": []}
-        master_rows = len(masters_probe_accounts["groups"]) + len(masters_probe_accounts["ledgers"])
+        groups_rows = parse_collection(groups_probe["response_xml"], "Group") if groups_probe.get("response_xml") else []
+        ledgers_probe = client.probe(
+            "ledgers_probe",
+            client.build_collection_xml(
+                "LedgersProbe",
+                "Ledger",
+                fields=["Name", "Parent", "GUID"],
+                company=company_name,
+            ),
+        )
+        ledgers_rows = parse_collection(ledgers_probe["response_xml"], "Ledger") if ledgers_probe.get("response_xml") else []
+        master_rows = len(groups_rows) + len(ledgers_rows)
         tests["masters"] = {
-            "ok": master_rows > 0 and masters_probe.get("error") is None,
-            "group_count": len(masters_probe_accounts["groups"]),
-            "ledger_count": len(masters_probe_accounts["ledgers"]),
-            "error": masters_probe.get("error"),
-            "error_kind": masters_probe.get("error_kind"),
-            "duration_ms": masters_probe.get("duration_ms"),
+            "ok": master_rows > 0 and groups_probe.get("error") is None and ledgers_probe.get("error") is None,
+            "group_count": len(groups_rows),
+            "ledger_count": len(ledgers_rows),
+            "error": groups_probe.get("error") or ledgers_probe.get("error"),
+            "error_kind": groups_probe.get("error_kind") or ledgers_probe.get("error_kind"),
+            "duration_ms": (groups_probe.get("duration_ms") or 0) + (ledgers_probe.get("duration_ms") or 0),
         }
-        if masters_probe.get("error"):
-            warnings.append(f"Master-data probe error for '{company_name}': {masters_probe['error']}")
-            recommended_actions.extend(_recommended_actions_for_error_kind(masters_probe.get("error_kind")))
+        if groups_probe.get("error") or ledgers_probe.get("error"):
+            error_message = groups_probe.get("error") or ledgers_probe.get("error")
+            error_kind = groups_probe.get("error_kind") or ledgers_probe.get("error_kind")
+            warnings.append(f"Master-data probe error for '{company_name}': {error_message}")
+            recommended_actions.extend(_recommended_actions_for_error_kind(error_kind))
         elif master_rows == 0:
             warnings.append(f"Master-data probe returned zero groups/ledgers for '{company_name}'.")
             recommended_actions.append("Open the target company in Tally and leave it active before running `sync-masters`.")
@@ -460,17 +477,44 @@ def build_bootstrap_plan(client: TallyClient, company_name: str | None = None) -
     }
 
 
+def _sync_master_collection(
+    session: Session,
+    client: TallyClient,
+    *,
+    run: SyncRun,
+    request_type: str,
+    collection_name: str,
+    object_type: str,
+    model,
+    fields: list[str],
+    company_name: str,
+) -> list[dict]:
+    payload = client.execute(
+        request_type,
+        client.build_collection_xml(collection_name, object_type, fields=fields, company=company_name),
+    )
+    _record_payload(session, run, payload, company_name=company_name)
+    line_error = client.extract_line_error(payload["response_xml"])
+    if line_error:
+        raise RuntimeError(line_error)
+    rows = parse_collection(payload["response_xml"], object_type)
+    for row in rows:
+        _upsert_by_name(session, model, row["name"], {k: v for k, v in row.items() if k != "name"})
+    return rows
+
+
 def sync_masters(session: Session, client: TallyClient, company_name: str | None = None) -> dict:
     run = _start_run(session, "masters", company_name=company_name)
     try:
-        accounts_payload = client.execute("list_of_accounts", client.build_report_xml("List of Accounts", explode=True, company=company_name))
-        _record_payload(session, run, accounts_payload, company_name=company_name)
-        line_error = client.extract_line_error(accounts_payload["response_xml"])
-        if line_error:
-            raise RuntimeError(line_error)
-        accounts = parse_list_of_accounts(accounts_payload["response_xml"])
+        resolved_company_name = company_name
+        if not resolved_company_name:
+            companies = sync_companies(session, client)
+            names = [row["name"] for row in companies if row["name"]]
+            if len(names) == 1:
+                resolved_company_name = names[0]
+            else:
+                raise RuntimeError("Could not infer the target company. Pass an exact company name or make only one company visible in Tally.")
 
-        resolved_company_name = company_name or accounts.get("company")
         if resolved_company_name:
             company = session.scalar(select(Company).where(Company.name == resolved_company_name))
             if company is None:
@@ -479,16 +523,55 @@ def sync_masters(session: Session, client: TallyClient, company_name: str | None
             company.last_synced_at = datetime.utcnow()
             session.commit()
 
-        if not accounts["groups"] and not accounts["ledgers"]:
-            raise RuntimeError(
-                "No master data returned from Tally. Open the target company in Tally and retry."
-            )
+        groups = _sync_master_collection(
+            session,
+            client,
+            run=run,
+            request_type="groups",
+            collection_name="Groups",
+            object_type="Group",
+            model=Group,
+            fields=["Name", "Parent", "GUID", "IsRevenue", "IsDeemedPositive", "AffectsGrossProfit", "IsAddable"],
+            company_name=resolved_company_name,
+        )
+        ledgers = _sync_master_collection(
+            session,
+            client,
+            run=run,
+            request_type="ledgers",
+            collection_name="Ledgers",
+            object_type="Ledger",
+            model=Ledger,
+            fields=[
+                "Name",
+                "Parent",
+                "GUID",
+                "OpeningBalance",
+                "ClosingBalance",
+                "MailingName",
+                "Address",
+                "LedStateName",
+                "PriorStateName",
+                "CountryOfResidence",
+                "OldPINCode",
+                "PINCode",
+                "Email",
+                "LedgerPhone",
+                "LedgerMobile",
+                "IncomeTaxNumber",
+                "GSTRegistrationNumber",
+                "PartyGSTIN",
+                "GSTRegistrationType",
+                "CurrencyName",
+                "IsBillWiseOn",
+                "AffectsStock",
+                "CreatedBy",
+            ],
+            company_name=resolved_company_name,
+        )
 
-        for group in accounts["groups"]:
-            _upsert_by_name(session, Group, group["name"], {k: v for k, v in group.items() if k != "name"})
-
-        for ledger in accounts["ledgers"]:
-            _upsert_by_name(session, Ledger, ledger["name"], {k: v for k, v in ledger.items() if k != "name"})
+        if not groups and not ledgers:
+            raise RuntimeError("No group or ledger master data returned from Tally collections. Open the target company in Tally and retry.")
 
         entities: list[tuple[str, str, type, list[str] | None]] = [
             ("stock_groups", "Stock Group", StockGroup, ["Name", "Parent", "GUID"]),
@@ -527,12 +610,12 @@ def sync_masters(session: Session, client: TallyClient, company_name: str | None
             entity_type="masters",
             company_name=resolved_company_name,
             status="success",
-            row_count=len(accounts["groups"]) + len(accounts["ledgers"]),
+            row_count=len(groups) + len(ledgers),
         )
         return {
             "company": resolved_company_name,
-            "groups": len(accounts["groups"]),
-            "ledgers": len(accounts["ledgers"]),
+            "groups": len(groups),
+            "ledgers": len(ledgers),
         }
     except Exception as exc:
         session.rollback()
