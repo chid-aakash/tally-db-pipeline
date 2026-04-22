@@ -37,6 +37,20 @@ def _voucher_filter_formula(voucher_type: str) -> str:
     return _VOUCHER_FILTERS.get(voucher_type, f'$VoucherTypeName = "{_tdl_string(voucher_type)}"')
 
 
+def _voucher_childof_expression(voucher_type: str) -> str:
+    built_in = {
+        "Sales": "$$VchTypeSales",
+        "Purchase": "$$VchTypePurchase",
+        "Receipt": "$$VchTypeReceipt",
+        "Payment": "$$VchTypePayment",
+        "Journal": "$$VchTypeJournal",
+        "Contra": "$$VchTypeContra",
+        "Credit Note": "$$VchTypeCreditNote",
+        "Debit Note": "$$VchTypeDebitNote",
+    }
+    return built_in.get(voucher_type, f'"{_tdl_string(voucher_type)}"')
+
+
 class TallyClient:
     def __init__(
         self,
@@ -312,6 +326,52 @@ class TallyClient:
             "<FETCH>*, ALLLEDGERENTRIES, ALLINVENTORYENTRIES</FETCH>"
             "</COLLECTION>"
             f'<SYSTEM TYPE="Formulae" NAME="{_xml_attr(filter_name)}">{_xml(filter_formula)}</SYSTEM>'
+            "</TDLMESSAGE></TDL>"
+            "</DESC></BODY>"
+            "</ENVELOPE>"
+        )
+
+    @staticmethod
+    def build_voucher_type_collection_range_xml(
+        company: str,
+        voucher_type: str,
+        *,
+        from_date: str | None = None,
+        to_date: str | None = None,
+    ) -> str:
+        if from_date and not to_date:
+            to_date = from_date
+        if to_date and not from_date:
+            from_date = to_date
+
+        static_variables = [
+            f"<SVCURRENTCOMPANY>{_xml(company)}</SVCURRENTCOMPANY>",
+            "<SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>",
+        ]
+        if from_date:
+            static_variables.append(f'<SVFROMDATE TYPE="Date">{_xml(_format_tally_report_date(from_date))}</SVFROMDATE>')
+        if to_date:
+            static_variables.append(f'<SVTODATE TYPE="Date">{_xml(_format_tally_report_date(to_date))}</SVTODATE>')
+
+        collection_name = "RangeVouchers"
+        childof_expr = _voucher_childof_expression(voucher_type)
+        return (
+            "<ENVELOPE>"
+            "<HEADER>"
+            "<VERSION>1</VERSION>"
+            "<TALLYREQUEST>EXPORT</TALLYREQUEST>"
+            "<TYPE>COLLECTION</TYPE>"
+            f"<ID>{collection_name}</ID>"
+            "</HEADER>"
+            "<BODY><DESC>"
+            f"<STATICVARIABLES>{''.join(static_variables)}</STATICVARIABLES>"
+            "<TDL><TDLMESSAGE>"
+            f'<COLLECTION NAME="{collection_name}" ISINITIALIZE="Yes">'
+            "<TYPE>Vouchers : VoucherType</TYPE>"
+            f"<CHILDOF>{_xml(childof_expr)}</CHILDOF>"
+            "<BELONGSTO>Yes</BELONGSTO>"
+            "<FETCH>*, ALLLEDGERENTRIES, ALLINVENTORYENTRIES</FETCH>"
+            "</COLLECTION>"
             "</TDLMESSAGE></TDL>"
             "</DESC></BODY>"
             "</ENVELOPE>"

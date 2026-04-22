@@ -431,6 +431,19 @@ Example:
 tally-db-pipeline sync-vouchers --company "Shanke Pvt Ltd - 2025-26" --voucher-type Sales
 ```
 
+For dated voucher pulls, you can choose the range strategy explicitly:
+
+- `--range-mode daybook`
+  - uses Day Book export with date variables
+- `--range-mode collection`
+  - uses a voucher-type collection export with date variables
+
+Example:
+
+```bash
+tally-db-pipeline sync-vouchers --company "Shanke Pvt Ltd - 2025-26" --voucher-type Sales --from-date 2025-04-01 --to-date 2025-04-30 --range-mode collection
+```
+
 Other common voucher types:
 
 - `Purchase`
@@ -523,8 +536,28 @@ These commands:
 
 Current limitation:
 
-- voucher rows are company-scoped, but master tables are not yet company-scoped in the local schema
-- if multiple companies have colliding master names, master rows can still overwrite each other
+- master tables and voucher types are now company-scoped in the local schema
+- older local DBs upgraded from previous repo versions can still contain legacy blank-company master rows until they are cleaned up
+
+To inspect or clean those upgrade leftovers:
+
+```bash
+tally-db-pipeline report
+```
+
+Look for the `legacy_global_master_rows` section.
+
+Dry run the cleanup:
+
+```bash
+tally-db-pipeline prune-legacy-global-masters --dry-run
+```
+
+Apply the cleanup:
+
+```bash
+tally-db-pipeline prune-legacy-global-masters
+```
 
 ## Step 16: Run the standard full sync
 

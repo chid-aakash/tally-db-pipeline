@@ -19,6 +19,7 @@ from .sync import (
     init_db,
     list_company_families,
     prune_raw_payloads,
+    prune_legacy_global_master_rows,
     profile_company_family_vouchers,
     profile_vouchers,
     profile_vouchers_in_chunks,
@@ -229,6 +230,7 @@ def sync_vouchers_command(
     voucher_type: str = typer.Option(..., help="Base voucher type, for example Sales, Purchase, Receipt, Payment."),
     from_date: Optional[str] = typer.Option(default=None, help="Inclusive start date in YYYY-MM-DD format."),
     to_date: Optional[str] = typer.Option(default=None, help="Inclusive end date in YYYY-MM-DD format."),
+    range_mode: str = typer.Option("daybook", help="Range export strategy for dated voucher pulls: daybook or collection."),
 ) -> None:
     init_db()
     with _tally_client() as client, get_session() as session:
@@ -239,6 +241,7 @@ def sync_vouchers_command(
             voucher_type=voucher_type,
             from_date=from_date,
             to_date=to_date,
+            range_mode=range_mode,
         )
     typer.echo(f"Synced {result['saved']} vouchers for type: {result['voucher_type']}")
     if result.get("from_date") or result.get("to_date"):
@@ -255,6 +258,7 @@ def sync_vouchers_chunked_command(
     continue_on_error: bool = typer.Option(False, help="Continue even if one date window fails."),
     adaptive: bool = typer.Option(True, help="Automatically split failed date windows into smaller windows."),
     min_chunk_days: int = typer.Option(1, help="Smallest window size to try when adaptive splitting is enabled."),
+    range_mode: str = typer.Option("daybook", help="Range export strategy for dated voucher pulls: daybook or collection."),
 ) -> None:
     init_db()
     with _tally_client() as client, get_session() as session:
@@ -269,6 +273,7 @@ def sync_vouchers_chunked_command(
             continue_on_error=continue_on_error,
             adaptive=adaptive,
             min_chunk_days=min_chunk_days,
+            range_mode=range_mode,
         )
     for result in results:
         if result.get("error"):
@@ -287,6 +292,7 @@ def sync_vouchers_incremental_command(
     continue_on_error: bool = typer.Option(False, help="Continue even if one date window fails."),
     adaptive: bool = typer.Option(True, help="Automatically split failed date windows into smaller windows."),
     min_chunk_days: int = typer.Option(1, help="Smallest window size to try when adaptive splitting is enabled."),
+    range_mode: str = typer.Option("daybook", help="Range export strategy for dated voucher pulls: daybook or collection."),
 ) -> None:
     init_db()
     with _tally_client() as client, get_session() as session:
@@ -301,6 +307,7 @@ def sync_vouchers_incremental_command(
             continue_on_error=continue_on_error,
             adaptive=adaptive,
             min_chunk_days=min_chunk_days,
+            range_mode=range_mode,
         )
     for result in results:
         if result.get("error"):
@@ -521,6 +528,16 @@ def prune_payloads(
             request_type=request_type,
             dry_run=dry_run,
         )
+    typer.echo(json.dumps(result, indent=2))
+
+
+@command("prune-legacy-global-masters")
+def prune_legacy_global_masters(
+    dry_run: bool = typer.Option(False, help="Show how many legacy global master rows would be deleted without deleting them."),
+) -> None:
+    init_db()
+    with get_session() as session:
+        result = prune_legacy_global_master_rows(session, dry_run=dry_run)
     typer.echo(json.dumps(result, indent=2))
 
 

@@ -45,7 +45,7 @@ This file is intentionally adversarial. Items stay here until the repo can eithe
   - Remaining gaps:
     - chunk sizing starts static but now supports adaptive window splitting on failure
     - no response-size-aware tuning yet
-    - no alternative range-safe extraction path yet for installs where Day Book ignores or stalls on date variables
+    - collection-based range mode now exists as an operator-selectable alternative, but it still needs broader live validation
 
 - XML-safe request construction.
   - Current state: dynamic XML values are now escaped before sending requests.
@@ -59,7 +59,7 @@ This file is intentionally adversarial. Items stay here until the repo can eithe
 - Date-range correctness for voucher exports.
   - Current state: profiled/chunked voucher commands now validate that returned voucher dates actually stay inside the requested window.
   - Remaining gaps:
-    - still need a second deterministic extraction path for Tally builds where Day Book does not honor the date variables reliably
+    - still need stronger live evidence on when `daybook` vs `collection` range mode is the safer choice
 
 - Accidental local concurrency.
   - Current state: Tally-facing CLI commands use a local lock file to prevent overlapping commands from the same machine.
@@ -90,11 +90,10 @@ This file is intentionally adversarial. Items stay here until the repo can eithe
     - company-family workflows still depend on the same date-range extraction path, so they correctly fail if Tally does not honor date windows
 
 - Cross-company master scoping.
-  - Current state: voucher rows are company-scoped, but master tables are still globally keyed by name.
-  - Risk:
-    - a customer with multiple companies or fiscal-year variants can overwrite master rows with the same names
-  - Needed:
-    - company-scoped master tables plus a migration path
+  - Current state: master tables and voucher types are now company-scoped, and runtime SQLite migration rebuilds legacy tables into the new shape.
+  - Remaining gaps:
+    - older local DBs can still contain legacy blank-company rows from pre-migration runs until pruned
+    - broader Postgres validation is still needed
 
 - Unknown/custom structure preservation.
   - Current state: unknown/custom voucher child sections are preserved per voucher in `voucher_unknown_sections`.
@@ -141,7 +140,7 @@ This file is intentionally adversarial. Items stay here until the repo can eithe
 
 ## Immediate next implementation targets
 
-1. Add an alternative range-safe voucher extraction path for installs where Day Book ignores date filters.
-2. Add company-scoped master storage and migration handling.
-3. Add replay-based regression scripts over saved XML exports.
-4. Add richer discovery/profile commands for voucher families in use.
+1. Live-validate `collection` range mode on more Tally datasets and decide fallback strategy.
+2. Add replay-based regression scripts over saved XML exports.
+3. Add richer discovery/profile commands for voucher families in use.
+4. Tighten upgrade cleanup for legacy blank-company master rows.

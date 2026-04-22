@@ -73,9 +73,10 @@ class Company(Base):
 
 class Group(Base):
     __tablename__ = "groups"
-    __table_args__ = (UniqueConstraint("name", name="uq_groups_name"),)
+    __table_args__ = (UniqueConstraint("company_name", "name", name="uq_groups_company_name"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     parent: Mapped[str | None] = mapped_column(String(255))
     guid: Mapped[str | None] = mapped_column(String(255))
@@ -88,9 +89,10 @@ class Group(Base):
 
 class Ledger(Base):
     __tablename__ = "ledgers"
-    __table_args__ = (UniqueConstraint("name", name="uq_ledgers_name"),)
+    __table_args__ = (UniqueConstraint("company_name", "name", name="uq_ledgers_company_name"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     parent: Mapped[str | None] = mapped_column(String(255))
     guid: Mapped[str | None] = mapped_column(String(255))
@@ -115,9 +117,10 @@ class Ledger(Base):
 
 class StockGroup(Base):
     __tablename__ = "stock_groups"
-    __table_args__ = (UniqueConstraint("name", name="uq_stock_groups_name"),)
+    __table_args__ = (UniqueConstraint("company_name", "name", name="uq_stock_groups_company_name"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     parent: Mapped[str | None] = mapped_column(String(255))
     guid: Mapped[str | None] = mapped_column(String(255))
@@ -126,9 +129,10 @@ class StockGroup(Base):
 
 class StockItem(Base):
     __tablename__ = "stock_items"
-    __table_args__ = (UniqueConstraint("name", name="uq_stock_items_name"),)
+    __table_args__ = (UniqueConstraint("company_name", "name", name="uq_stock_items_company_name"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     parent: Mapped[str | None] = mapped_column(String(255))
     base_units: Mapped[str | None] = mapped_column(String(100))
@@ -147,9 +151,10 @@ class StockItem(Base):
 
 class Unit(Base):
     __tablename__ = "units"
-    __table_args__ = (UniqueConstraint("name", name="uq_units_name"),)
+    __table_args__ = (UniqueConstraint("company_name", "name", name="uq_units_company_name"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     original_name: Mapped[str | None] = mapped_column(String(255))
     is_simple_unit: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -158,9 +163,10 @@ class Unit(Base):
 
 class Godown(Base):
     __tablename__ = "godowns"
-    __table_args__ = (UniqueConstraint("name", name="uq_godowns_name"),)
+    __table_args__ = (UniqueConstraint("company_name", "name", name="uq_godowns_company_name"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     parent: Mapped[str | None] = mapped_column(String(255))
     last_synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
@@ -168,9 +174,10 @@ class Godown(Base):
 
 class CostCentre(Base):
     __tablename__ = "cost_centres"
-    __table_args__ = (UniqueConstraint("name", name="uq_cost_centres_name"),)
+    __table_args__ = (UniqueConstraint("company_name", "name", name="uq_cost_centres_company_name"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     parent: Mapped[str | None] = mapped_column(String(255))
     for_payroll: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -180,9 +187,10 @@ class CostCentre(Base):
 
 class VoucherType(Base):
     __tablename__ = "voucher_types"
-    __table_args__ = (UniqueConstraint("name", name="uq_voucher_types_name"),)
+    __table_args__ = (UniqueConstraint("company_name", "name", name="uq_voucher_types_company_name"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     parent: Mapped[str | None] = mapped_column(String(255))
     numbering_method: Mapped[str | None] = mapped_column(String(100))
