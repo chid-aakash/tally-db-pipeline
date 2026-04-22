@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
-from datetime import datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -18,6 +18,7 @@ from .models import (
     RawPayload,
     StockGroup,
     StockItem,
+    SyncCheckpoint,
     SyncRun,
     Unit,
     Voucher,
@@ -46,7 +47,6 @@ STANDARD_VOUCHER_TYPES = [
     "Credit Note",
     "Debit Note",
 ]
-
 
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
@@ -98,6 +98,36 @@ def _record_file_payload(
     _record_payload(session, run, payload, company_name=company_name)
 
 
+def _upsert_checkpoint(
+    session: Session,
+    *,
+    entity_type: str,
+    company_name: str | None,
+    status: str,
+    row_count: int = 0,
+    marker: str | None = None,
+    error_message: str | None = None,
+) -> None:
+    normalized_company = company_name or ""
+    checkpoint = session.scalar(
+        select(SyncCheckpoint).where(
+            SyncCheckpoint.entity_type == entity_type,
+            SyncCheckpoint.company_name == normalized_company,
+        )
+    )
+    if checkpoint is None:
+        checkpoint = SyncCheckpoint(entity_type=entity_type, company_name=normalized_company)
+        session.add(checkpoint)
+    checkpoint.last_sync_status = status
+    checkpoint.last_error_message = error_message
+    checkpoint.last_row_count = row_count
+    checkpoint.last_marker = marker
+    checkpoint.updated_at = datetime.utcnow()
+    if status == "success":
+        checkpoint.last_success_at = datetime.utcnow()
+    session.commit()
+
+
 def _upsert_by_name(session: Session, model, name: str, values: dict):
     row = session.scalar(select(model).where(model.name == name))
     if row is None:
@@ -109,6 +139,52 @@ def _upsert_by_name(session: Session, model, name: str, values: dict):
     setattr(row, "last_synced_at", datetime.utcnow())
     session.commit()
     return row
+
+
+def _parse_iso_date(raw: str) -> datetime:
+    for fmt in ("%Y-%m-%d", "%Y%m%d", "%d-%b-%Y", "%d-%B-%Y"):
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+    raise ValueError(f"Unsupported date format: {raw}. Use YYYY-MM-DD.")
+
+
+def _format_iso_date(value: datetime) -> str:
+    return value.strftime("%Y-%m-%d")
+
+
+def _next_day(raw: str) -> str:
+    return _format_iso_date(_parse_iso_date(raw) + timedelta(days=1))
+
+
+def _iter_date_windows(start_date: str, end_date: str, chunk_days: int) -> list[tuple[str, str]]:
+    if chunk_days <= 0:
+        raise ValueError("chunk_days must be positive.")
+    start = _parse_iso_date(start_date)
+    end = _parse_iso_date(end_date)
+    if start > end:
+        raise ValueError("start_date must be earlier than or equal to end_date.")
+
+    windows: list[tuple[str, str]] = []
+    cursor = start
+    delta = timedelta(days=chunk_days - 1)
+    one_day = timedelta(days=1)
+    while cursor <= end:
+        window_end = min(cursor + delta, end)
+        windows.append((_format_iso_date(cursor), _format_iso_date(window_end)))
+        cursor = window_end + one_day
+    return windows
+
+
+def _get_checkpoint(session: Session, *, entity_type: str, company_name: str | None) -> SyncCheckpoint | None:
+    normalized_company = company_name or ""
+    return session.scalar(
+        select(SyncCheckpoint).where(
+            SyncCheckpoint.entity_type == entity_type,
+            SyncCheckpoint.company_name == normalized_company,
+        )
+    )
 
 
 def sync_companies(session: Session, client: TallyClient) -> list[dict]:
@@ -128,10 +204,12 @@ def sync_companies(session: Session, client: TallyClient) -> list[dict]:
                 setattr(company, key, value)
             company.last_synced_at = datetime.utcnow()
         session.commit()
+        _upsert_checkpoint(session, entity_type="companies", company_name=None, status="success", row_count=len([r for r in companies if r["name"]]))
         _finish_run(session, run, "success")
         return companies
     except Exception as exc:
         session.rollback()
+        _upsert_checkpoint(session, entity_type="companies", company_name=None, status="failed", error_message=str(exc))
         _finish_run(session, run, "failed", str(exc))
         raise
 
@@ -254,6 +332,13 @@ def sync_masters(session: Session, client: TallyClient, company_name: str | None
             _upsert_by_name(session, StockItem, balance["name"], {k: v for k, v in balance.items() if k != "name"})
 
         _finish_run(session, run, "success")
+        _upsert_checkpoint(
+            session,
+            entity_type="masters",
+            company_name=resolved_company_name,
+            status="success",
+            row_count=len(accounts["groups"]) + len(accounts["ledgers"]),
+        )
         return {
             "company": resolved_company_name,
             "groups": len(accounts["groups"]),
@@ -261,6 +346,7 @@ def sync_masters(session: Session, client: TallyClient, company_name: str | None
         }
     except Exception as exc:
         session.rollback()
+        _upsert_checkpoint(session, entity_type="masters", company_name=company_name, status="failed", error_message=str(exc))
         _finish_run(session, run, "failed", str(exc))
         raise
 
@@ -279,22 +365,40 @@ def sync_voucher_types(session: Session, client: TallyClient, company_name: str 
         rows = parse_collection(payload["response_xml"], "Voucher Type")
         for row in rows:
             _upsert_by_name(session, VoucherType, row["name"], {k: v for k, v in row.items() if k != "name"})
+        _upsert_checkpoint(session, entity_type="voucher_types", company_name=company_name, status="success", row_count=len(rows))
         _finish_run(session, run, "success")
         return rows
     except Exception as exc:
         session.rollback()
+        _upsert_checkpoint(session, entity_type="voucher_types", company_name=company_name, status="failed", error_message=str(exc))
         _finish_run(session, run, "failed", str(exc))
         raise
 
 
-def sync_vouchers(session: Session, client: TallyClient, company_name: str, voucher_type: str) -> dict:
-    run = _start_run(session, f"vouchers:{voucher_type}", company_name=company_name)
+def sync_vouchers(
+    session: Session,
+    client: TallyClient,
+    company_name: str,
+    voucher_type: str,
+    from_date: str | None = None,
+    to_date: str | None = None,
+) -> dict:
+    run_label = f"vouchers:{voucher_type}"
+    if from_date or to_date:
+        run_label += ":range"
+    run = _start_run(session, run_label, company_name=company_name)
     try:
         voucher_type_rows = [
             {"name": row.name, "parent": row.parent, "numbering_method": row.numbering_method}
             for row in session.scalars(select(VoucherType)).all()
         ]
-        payload = client.execute("vouchers", client.build_voucher_collection_xml(company_name, voucher_type))
+        if from_date or to_date:
+            payload = client.execute(
+                "vouchers_daybook",
+                client.build_daybook_xml(company_name, voucher_type=voucher_type, from_date=from_date, to_date=to_date),
+            )
+        else:
+            payload = client.execute("vouchers", client.build_voucher_collection_xml(company_name, voucher_type))
         _record_payload(session, run, payload, company_name=company_name)
         line_error = client.extract_line_error(payload["response_xml"])
         if line_error:
@@ -302,6 +406,7 @@ def sync_vouchers(session: Session, client: TallyClient, company_name: str, vouc
         vouchers = parse_vouchers(payload["response_xml"])
 
         saved = 0
+        latest_marker = None
         for row in vouchers:
             guid = row.get("guid")
             if not guid:
@@ -359,14 +464,102 @@ def sync_vouchers(session: Session, client: TallyClient, company_name: str, vouc
                 )
 
             saved += 1
+            voucher_date = row.get("voucher_date")
+            if voucher_date and (latest_marker is None or voucher_date > latest_marker):
+                latest_marker = voucher_date
 
         session.commit()
+        _upsert_checkpoint(
+            session,
+            entity_type=f"vouchers:{voucher_type}",
+            company_name=company_name,
+            status="success",
+            row_count=saved,
+            marker=latest_marker,
+        )
         _finish_run(session, run, "success")
-        return {"voucher_type": voucher_type, "saved": saved}
+        return {"voucher_type": voucher_type, "saved": saved, "from_date": from_date, "to_date": to_date}
     except Exception as exc:
         session.rollback()
+        _upsert_checkpoint(
+            session,
+            entity_type=f"vouchers:{voucher_type}",
+            company_name=company_name,
+            status="failed",
+            error_message=str(exc),
+        )
         _finish_run(session, run, "failed", str(exc))
         raise
+
+
+def sync_vouchers_in_chunks(
+    session: Session,
+    client: TallyClient,
+    *,
+    company_name: str,
+    voucher_type: str,
+    start_date: str,
+    end_date: str,
+    chunk_days: int = 31,
+    continue_on_error: bool = False,
+) -> list[dict]:
+    results: list[dict] = []
+    for from_date, to_date in _iter_date_windows(start_date, end_date, chunk_days):
+        try:
+            results.append(
+                sync_vouchers(
+                    session,
+                    client,
+                    company_name=company_name,
+                    voucher_type=voucher_type,
+                    from_date=from_date,
+                    to_date=to_date,
+                )
+            )
+        except Exception as exc:
+            result = {
+                "voucher_type": voucher_type,
+                "saved": 0,
+                "from_date": from_date,
+                "to_date": to_date,
+                "error": str(exc),
+            }
+            results.append(result)
+            if not continue_on_error:
+                raise
+    return results
+
+
+def sync_vouchers_incremental(
+    session: Session,
+    client: TallyClient,
+    *,
+    company_name: str,
+    voucher_type: str,
+    since_date: str | None = None,
+    until_date: str | None = None,
+    chunk_days: int = 31,
+    continue_on_error: bool = False,
+) -> list[dict]:
+    checkpoint = _get_checkpoint(session, entity_type=f"vouchers:{voucher_type}", company_name=company_name)
+    start_date = since_date
+    if not start_date and checkpoint and checkpoint.last_marker:
+        start_date = _next_day(checkpoint.last_marker)
+    if not start_date:
+        raise ValueError(
+            f"No checkpoint exists yet for {voucher_type}. Provide since_date for the initial incremental sync."
+        )
+    end_date = until_date or _format_iso_date(datetime.utcnow())
+    return sync_vouchers_in_chunks(
+        session,
+        client,
+        company_name=company_name,
+        voucher_type=voucher_type,
+        start_date=start_date,
+        end_date=end_date,
+        chunk_days=chunk_days,
+        continue_on_error=continue_on_error,
+    )
 
 
 def sync_standard_vouchers(
@@ -421,6 +614,13 @@ def replay_xml_file(
             for ledger in parsed["ledgers"]:
                 _upsert_by_name(session, Ledger, ledger["name"], {k: v for k, v in ledger.items() if k != "name"})
 
+            _upsert_checkpoint(
+                session,
+                entity_type="replay:masters",
+                company_name=resolved_company,
+                status="success",
+                row_count=len(parsed["groups"]) + len(parsed["ledgers"]),
+            )
             _finish_run(session, run, "success")
             return {
                 "kind": kind,
@@ -442,6 +642,7 @@ def replay_xml_file(
             rows = parse_collection(xml_text, object_type)
             for row in rows:
                 _upsert_by_name(session, model, row["name"], {k: v for k, v in row.items() if k != "name"})
+            _upsert_checkpoint(session, entity_type=f"replay:{kind}", company_name=company_name, status="success", row_count=len(rows))
             _finish_run(session, run, "success")
             return {"kind": kind, "count": len(rows)}
 
@@ -449,6 +650,7 @@ def replay_xml_file(
             rows = parse_stock_item_balances(xml_text)
             for row in rows:
                 _upsert_by_name(session, StockItem, row["name"], {k: v for k, v in row.items() if k != "name"})
+            _upsert_checkpoint(session, entity_type=f"replay:{kind}", company_name=company_name, status="success", row_count=len(rows))
             _finish_run(session, run, "success")
             return {"kind": kind, "count": len(rows)}
 
@@ -461,6 +663,7 @@ def replay_xml_file(
             ]
             vouchers = parse_vouchers(xml_text)
             saved = 0
+            latest_marker = None
             for row in vouchers:
                 guid = row.get("guid")
                 if not guid:
@@ -515,15 +718,60 @@ def replay_xml_file(
                         )
                     )
                 saved += 1
+                voucher_date = row.get("voucher_date")
+                if voucher_date and (latest_marker is None or voucher_date > latest_marker):
+                    latest_marker = voucher_date
             session.commit()
+            _upsert_checkpoint(
+                session,
+                entity_type=f"replay:{kind}",
+                company_name=company_name,
+                status="success",
+                row_count=saved,
+                marker=latest_marker,
+            )
             _finish_run(session, run, "success")
             return {"kind": kind, "saved": saved}
 
         raise ValueError(f"Unsupported replay kind: {kind}")
     except Exception as exc:
         session.rollback()
+        _upsert_checkpoint(session, entity_type=f"replay:{kind}", company_name=company_name, status="failed", error_message=str(exc))
         _finish_run(session, run, "failed", str(exc))
         raise
+
+
+def replay_xml_bundle(
+    session: Session,
+    *,
+    directory: str,
+    company_name: str,
+) -> list[dict]:
+    bundle_dir = Path(directory)
+    if not bundle_dir.is_dir():
+        raise NotADirectoryError(directory)
+
+    plan = [
+        ("masters", bundle_dir / "list-of-accounts.xml"),
+        ("stock-groups", bundle_dir / "stock-groups.xml"),
+        ("stock-items", bundle_dir / "stock-items.xml"),
+        ("units", bundle_dir / "units.xml"),
+        ("godowns", bundle_dir / "godowns.xml"),
+        ("cost-centres", bundle_dir / "cost-centres.xml"),
+        ("voucher-types", bundle_dir / "voucher-types.xml"),
+        ("vouchers", bundle_dir / "day-book.xml"),
+    ]
+
+    results: list[dict] = []
+    for kind, file_path in plan:
+        if not file_path.exists():
+            results.append({"kind": kind, "error": f"Missing file: {file_path.name}"})
+            continue
+        kwargs = {"kind": kind, "file_path": str(file_path)}
+        if kind == "vouchers":
+            kwargs["company_name"] = company_name
+        results.append(replay_xml_file(session, **kwargs))
+    return results
 
 
 def get_database_report(session: Session) -> dict:
@@ -562,6 +810,18 @@ def get_database_report(session: Session) -> dict:
         "voucher_inventory_entries": count(VoucherInventoryEntry),
         "voucher_ledger_entries": count(VoucherLedgerEntry),
         "raw_payloads": count(RawPayload),
+        "checkpoints": [
+            {
+                "entity_type": row.entity_type,
+                "company_name": row.company_name or None,
+                "last_success_at": row.last_success_at.isoformat(timespec="seconds") if row.last_success_at else None,
+                "last_sync_status": row.last_sync_status,
+                "last_error_message": row.last_error_message,
+                "last_row_count": row.last_row_count,
+                "last_marker": row.last_marker,
+            }
+            for row in session.scalars(select(SyncCheckpoint).order_by(SyncCheckpoint.entity_type, SyncCheckpoint.company_name)).all()
+        ],
         "running_syncs": count_running_syncs(session),
         "latest_voucher_syncs": latest_voucher_syncs,
         "recent_runs": recent_runs,

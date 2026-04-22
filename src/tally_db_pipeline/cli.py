@@ -14,11 +14,14 @@ from .sync import (
     get_database_report,
     init_db,
     replay_xml_file,
+    replay_xml_bundle,
     sync_companies,
     sync_masters,
     sync_standard_vouchers,
     sync_voucher_types,
     sync_vouchers,
+    sync_vouchers_in_chunks,
+    sync_vouchers_incremental,
 )
 from .tally_client import TallyClient
 
@@ -134,11 +137,78 @@ def sync_voucher_types_command(company: Optional[str] = typer.Option(default=Non
 def sync_vouchers_command(
     company: str = typer.Option(..., help="Exact Tally company name, including FY suffix where applicable."),
     voucher_type: str = typer.Option(..., help="Base voucher type, for example Sales, Purchase, Receipt, Payment."),
+    from_date: Optional[str] = typer.Option(default=None, help="Inclusive start date in YYYY-MM-DD format."),
+    to_date: Optional[str] = typer.Option(default=None, help="Inclusive end date in YYYY-MM-DD format."),
 ) -> None:
     init_db()
     with get_session() as session:
-        result = sync_vouchers(session, _client(), company_name=company, voucher_type=voucher_type)
+        result = sync_vouchers(
+            session,
+            _client(),
+            company_name=company,
+            voucher_type=voucher_type,
+            from_date=from_date,
+            to_date=to_date,
+        )
     typer.echo(f"Synced {result['saved']} vouchers for type: {result['voucher_type']}")
+    if result.get("from_date") or result.get("to_date"):
+        typer.echo(f"Date range: {result.get('from_date') or result.get('to_date')} to {result.get('to_date') or result.get('from_date')}")
+
+
+@app.command("sync-vouchers-chunked")
+def sync_vouchers_chunked_command(
+    company: str = typer.Option(..., help="Exact Tally company name, including FY suffix where applicable."),
+    voucher_type: str = typer.Option(..., help="Base voucher type, for example Sales, Purchase, Receipt, Payment."),
+    from_date: str = typer.Option(..., help="Inclusive start date in YYYY-MM-DD format."),
+    to_date: str = typer.Option(..., help="Inclusive end date in YYYY-MM-DD format."),
+    chunk_days: int = typer.Option(31, help="Chunk size in days."),
+    continue_on_error: bool = typer.Option(False, help="Continue even if one date window fails."),
+) -> None:
+    init_db()
+    with get_session() as session:
+        results = sync_vouchers_in_chunks(
+            session,
+            _client(),
+            company_name=company,
+            voucher_type=voucher_type,
+            start_date=from_date,
+            end_date=to_date,
+            chunk_days=chunk_days,
+            continue_on_error=continue_on_error,
+        )
+    for result in results:
+        if result.get("error"):
+            typer.echo(f"{result['from_date']}..{result['to_date']}: ERROR - {result['error']}")
+        else:
+            typer.echo(f"{result['from_date']}..{result['to_date']}: {result['saved']}")
+
+
+@app.command("sync-vouchers-incremental")
+def sync_vouchers_incremental_command(
+    company: str = typer.Option(..., help="Exact Tally company name, including FY suffix where applicable."),
+    voucher_type: str = typer.Option(..., help="Base voucher type, for example Sales, Purchase, Receipt, Payment."),
+    since_date: Optional[str] = typer.Option(default=None, help="Initial inclusive start date in YYYY-MM-DD format when no checkpoint exists."),
+    until_date: Optional[str] = typer.Option(default=None, help="Inclusive end date in YYYY-MM-DD format. Defaults to today."),
+    chunk_days: int = typer.Option(31, help="Chunk size in days."),
+    continue_on_error: bool = typer.Option(False, help="Continue even if one date window fails."),
+) -> None:
+    init_db()
+    with get_session() as session:
+        results = sync_vouchers_incremental(
+            session,
+            _client(),
+            company_name=company,
+            voucher_type=voucher_type,
+            since_date=since_date,
+            until_date=until_date,
+            chunk_days=chunk_days,
+            continue_on_error=continue_on_error,
+        )
+    for result in results:
+        if result.get("error"):
+            typer.echo(f"{result['from_date']}..{result['to_date']}: ERROR - {result['error']}")
+        else:
+            typer.echo(f"{result['from_date']}..{result['to_date']}: {result['saved']}")
 
 
 @app.command("sync-standard-vouchers")
@@ -205,4 +275,15 @@ def replay_xml(
     init_db()
     with get_session() as session:
         result = replay_xml_file(session, kind=kind, file_path=file, company_name=company)
+    typer.echo(json.dumps(result, indent=2))
+
+
+@app.command("replay-bundle")
+def replay_bundle(
+    directory: str = typer.Option(..., help="Directory containing saved Tally XML exports."),
+    company: str = typer.Option(..., help="Exact company name for voucher replay within the bundle."),
+) -> None:
+    init_db()
+    with get_session() as session:
+        result = replay_xml_bundle(session, directory=directory, company_name=company)
     typer.echo(json.dumps(result, indent=2))

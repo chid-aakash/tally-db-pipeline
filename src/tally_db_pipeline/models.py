@@ -39,6 +39,21 @@ class RawPayload(Base):
     sync_run: Mapped["SyncRun"] = relationship(back_populates="raw_payloads")
 
 
+class SyncCheckpoint(Base):
+    __tablename__ = "sync_checkpoints"
+    __table_args__ = (UniqueConstraint("entity_type", "company_name", name="uq_sync_checkpoint_entity_company"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    entity_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    company_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_sync_status: Mapped[str | None] = mapped_column(String(50))
+    last_error_message: Mapped[str | None] = mapped_column(Text)
+    last_row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_marker: Mapped[str | None] = mapped_column(String(255))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
 class Company(Base):
     __tablename__ = "companies"
 

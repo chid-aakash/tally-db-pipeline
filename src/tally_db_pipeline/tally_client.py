@@ -4,12 +4,15 @@ import hashlib
 import logging
 import re
 import time
+from datetime import date, datetime
+from xml.sax.saxutils import escape
 
 import requests
 
 
 logger = logging.getLogger(__name__)
 _INVALID_XML_CHARS = re.compile(r"&#(?:[0-8]|1[0-1]|1[4-9]|2[0-9]|3[01]);")
+_MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 _VOUCHER_FILTERS = {
     "Sales": "$$IsSales:$VoucherTypeName",
@@ -128,14 +131,14 @@ class TallyClient:
     @staticmethod
     def build_report_xml(report_name: str, explode: bool = True, company: str | None = None) -> str:
         explode_flag = "<EXPLODEFLAG>Yes</EXPLODEFLAG>" if explode else ""
-        company_xml = f"<SVCURRENTCOMPANY>{company}</SVCURRENTCOMPANY>" if company else ""
+        company_xml = f"<SVCURRENTCOMPANY>{_xml(company)}</SVCURRENTCOMPANY>" if company else ""
         return (
             "<ENVELOPE>"
             "<HEADER>"
             "<VERSION>1</VERSION>"
             "<TALLYREQUEST>Export</TALLYREQUEST>"
             "<TYPE>Data</TYPE>"
-            f"<ID>{report_name}</ID>"
+            f"<ID>{_xml(report_name)}</ID>"
             "</HEADER>"
             "<BODY><DESC><STATICVARIABLES>"
             f"{explode_flag}{company_xml}<SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>"
@@ -145,21 +148,21 @@ class TallyClient:
 
     @staticmethod
     def build_collection_xml(name: str, object_type: str, fields: list[str] | None = None, company: str | None = None) -> str:
-        methods = "".join(f"<NATIVEMETHOD>{field}</NATIVEMETHOD>" for field in fields) if fields else "<NATIVEMETHOD>*</NATIVEMETHOD>"
-        company_xml = f"<SVCURRENTCOMPANY>{company}</SVCURRENTCOMPANY>" if company else ""
+        methods = "".join(f"<NATIVEMETHOD>{_xml(field)}</NATIVEMETHOD>" for field in fields) if fields else "<NATIVEMETHOD>*</NATIVEMETHOD>"
+        company_xml = f"<SVCURRENTCOMPANY>{_xml(company)}</SVCURRENTCOMPANY>" if company else ""
         return (
             "<ENVELOPE>"
             "<HEADER>"
             "<VERSION>1</VERSION>"
             "<TALLYREQUEST>EXPORT</TALLYREQUEST>"
             "<TYPE>COLLECTION</TYPE>"
-            f"<ID>{name}</ID>"
+            f"<ID>{_xml(name)}</ID>"
             "</HEADER>"
             "<BODY><DESC>"
             f"<STATICVARIABLES>{company_xml}<SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT></STATICVARIABLES>"
             "<TDL><TDLMESSAGE>"
-            f'<COLLECTION NAME="{name}" ISINITIALIZE="Yes">'
-            f"<TYPE>{object_type}</TYPE>"
+            f'<COLLECTION NAME="{_xml_attr(name)}" ISINITIALIZE="Yes">'
+            f"<TYPE>{_xml(object_type)}</TYPE>"
             f"{methods}"
             "</COLLECTION>"
             "</TDLMESSAGE></TDL>"
@@ -183,17 +186,69 @@ class TallyClient:
             "</HEADER>"
             "<BODY><DESC>"
             "<STATICVARIABLES>"
-            f"<SVCURRENTCOMPANY>{company}</SVCURRENTCOMPANY>"
+            f"<SVCURRENTCOMPANY>{_xml(company)}</SVCURRENTCOMPANY>"
             "<SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>"
             "</STATICVARIABLES>"
             "<TDL><TDLMESSAGE>"
             '<COLLECTION NAME="AllVouchers" ISINITIALIZE="Yes">'
             "<TYPE>Voucher</TYPE>"
-            f"<FILTER>{filter_name}</FILTER>"
+            f"<FILTER>{_xml(filter_name)}</FILTER>"
             "<FETCH>*, ALLLEDGERENTRIES, ALLINVENTORYENTRIES</FETCH>"
             "</COLLECTION>"
-            f'<SYSTEM TYPE="Formulae" NAME="{filter_name}">{filter_formula}</SYSTEM>'
+            f'<SYSTEM TYPE="Formulae" NAME="{_xml_attr(filter_name)}">{_xml(filter_formula)}</SYSTEM>'
             "</TDLMESSAGE></TDL>"
+            "</DESC></BODY>"
+            "</ENVELOPE>"
+        )
+
+    @staticmethod
+    def build_daybook_xml(
+        company: str,
+        voucher_type: str | None = None,
+        from_date: str | None = None,
+        to_date: str | None = None,
+    ) -> str:
+        if from_date and not to_date:
+            to_date = from_date
+        if to_date and not from_date:
+            from_date = to_date
+
+        static_variables = [
+            f"<SVCURRENTCOMPANY>{_xml(company)}</SVCURRENTCOMPANY>",
+            "<SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>",
+        ]
+        if from_date:
+            static_variables.append(f'<SVFROMDATE TYPE="Date">{_xml(_format_tally_date(from_date))}</SVFROMDATE>')
+        if to_date:
+            static_variables.append(f'<SVTODATE TYPE="Date">{_xml(_format_tally_date(to_date))}</SVTODATE>')
+
+        tdl = ""
+        if voucher_type:
+            if voucher_type not in _VOUCHER_FILTERS:
+                raise ValueError(f"Unsupported voucher type: {voucher_type}")
+            filter_name = re.sub(r"[^A-Za-z0-9]", "", voucher_type) + "Filter"
+            filter_formula = _VOUCHER_FILTERS[voucher_type]
+            tdl = (
+                "<TDL><TDLMESSAGE>"
+                '<REPORT NAME="Day Book" ISMODIFY="Yes" ISFIXED="No" ISINITIALIZE="No" ISOPTION="No" ISINTERNAL="No">'
+                f"<LOCAL>Collection : Default : Add :Filter : {_xml(filter_name)}</LOCAL>"
+                "<LOCAL>Collection : Default : Add :Fetch : VoucherTypeName</LOCAL>"
+                "</REPORT>"
+                f'<SYSTEM TYPE="Formulae" NAME="{_xml_attr(filter_name)}">{_xml(filter_formula)}</SYSTEM>'
+                "</TDLMESSAGE></TDL>"
+            )
+
+        return (
+            "<ENVELOPE>"
+            "<HEADER>"
+            "<VERSION>1</VERSION>"
+            "<TALLYREQUEST>Export</TALLYREQUEST>"
+            "<TYPE>Data</TYPE>"
+            "<ID>DayBook</ID>"
+            "</HEADER>"
+            "<BODY><DESC>"
+            f"<STATICVARIABLES>{''.join(static_variables)}</STATICVARIABLES>"
+            f"{tdl}"
             "</DESC></BODY>"
             "</ENVELOPE>"
         )
@@ -213,3 +268,25 @@ class TallyClient:
         if not match:
             return None
         return match.group(1).replace("&apos;", "'").strip()
+
+
+def _xml(value: str) -> str:
+    return escape(value, {'"': "&quot;"})
+
+
+def _xml_attr(value: str) -> str:
+    return escape(value, {'"': "&quot;", "'": "&apos;"})
+
+
+def _format_tally_date(raw: str) -> str:
+    parsed = _coerce_date(raw)
+    return f"{parsed.day}-{_MONTH_ABBR[parsed.month - 1]}-{parsed.year}"
+
+
+def _coerce_date(raw: str) -> date:
+    for fmt in ("%Y-%m-%d", "%Y%m%d", "%d-%b-%Y", "%d-%B-%Y"):
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except ValueError:
+            continue
+    raise ValueError(f"Unsupported date format: {raw}. Use YYYY-MM-DD.")

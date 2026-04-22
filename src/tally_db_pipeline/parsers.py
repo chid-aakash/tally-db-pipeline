@@ -97,12 +97,15 @@ def parse_list_of_accounts(xml_string: str | bytes) -> dict:
     currencies: list[dict] = []
     groups: list[dict] = []
     ledgers: list[dict] = []
-    company = ""
+    static_variables = root.find("./BODY/DESC/STATICVARIABLES")
+    company = _text(static_variables, "SVCURRENTCOMPANY", "") if static_variables is not None else ""
 
     for tally_message in root.iter("TALLYMESSAGE"):
         for child in tally_message:
             if child.tag == "COMPANY":
-                company = _attr(child, "NAME") or _text(child, "NAME", "")
+                company_name = _attr(child, "NAME") or _text(child, "NAME", "")
+                if company_name:
+                    company = company_name
             elif child.tag == "CURRENCY":
                 currencies.append(
                     {

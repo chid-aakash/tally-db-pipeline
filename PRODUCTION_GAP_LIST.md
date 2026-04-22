@@ -33,12 +33,23 @@ This file is intentionally adversarial. Items stay here until the repo can eithe
 ## Critical
 
 - Incremental voucher sync with checkpoints.
-  - Current state: vouchers dedupe by GUID but are still re-fetched wholesale.
-  - Needed: per-company + per-voucher-family cursor/checkpoint model.
+  - Current state: checkpoint table exists and incremental voucher command exists.
+  - Remaining gaps:
+    - checkpointing is date-based, not object-level
+    - initial backfill still needs an explicit start date
+    - partial-window retries need stronger resume semantics
 
 - Chunked voucher extraction.
-  - Current state: one request can pull an entire voucher family and time out.
-  - Needed: deterministic batching, likely by date range and/or smaller TDL queries.
+  - Current state: date-window chunking exists for voucher pulls.
+  - Remaining gaps:
+    - chunk sizing is static
+    - no adaptive retry/downshift when a window is still too large
+    - no automatic company fiscal-year discovery yet
+
+- XML-safe request construction.
+  - Current state: dynamic XML values are now escaped before sending requests.
+  - Remaining gaps:
+    - keep reviewing any newly added dynamic tags so we do not regress on special-character handling.
 
 - Clear separation between discovery-safe requests and heavy extraction requests.
   - Current state: some probes can still be too heavy if we are careless.
@@ -51,7 +62,7 @@ This file is intentionally adversarial. Items stay here until the repo can eithe
 ## High
 
 - Offline replay coverage from saved XML exports.
-  - Current state: added replay command, but there are no automated regression checks yet.
+  - Current state: added replay commands and bundle replay, but there are no automated regression checks yet.
   - Needed: repeatable test matrix over all saved XML files.
 
 - Voucher-family profiling.

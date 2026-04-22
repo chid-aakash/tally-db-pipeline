@@ -10,6 +10,15 @@ The current design is:
 
 There is no separate bridge service in this repo.
 
+The extraction model is intentionally sequential:
+
+- send one XML request
+- wait for one XML response
+- store the raw payloads and normalized rows
+- then move to the next request
+
+This is deliberate because Tally is fragile under overlapping requests.
+
 ## What this repo does
 
 - connects directly to TallyPrime over its HTTP/XML interface
@@ -34,6 +43,7 @@ There is no separate bridge service in this repo.
 - voucher ledger lines
 - raw XML payloads for every sync request
 - sync run history
+- sync checkpoints for incremental voucher pulls
 
 ## Important assumptions
 
@@ -397,6 +407,26 @@ If you want it to keep going even if one voucher family fails:
 tally-db-pipeline sync-standard-vouchers --company "Shanke Pvt Ltd - 2025-26" --continue-on-error
 ```
 
+If the customer has a large history, start with a bounded date range:
+
+```bash
+tally-db-pipeline sync-vouchers --company "Shanke Pvt Ltd - 2025-26" --voucher-type Sales --from-date 2025-04-01 --to-date 2025-04-30
+```
+
+For larger history loads, use chunked date windows:
+
+```bash
+tally-db-pipeline sync-vouchers-chunked --company "Shanke Pvt Ltd - 2025-26" --voucher-type Sales --from-date 2025-04-01 --to-date 2026-03-31 --chunk-days 31
+```
+
+After the first range-based load, use incremental sync:
+
+```bash
+tally-db-pipeline sync-vouchers-incremental --company "Shanke Pvt Ltd - 2025-26" --voucher-type Sales --since-date 2025-04-01
+```
+
+Once a checkpoint exists for that company and voucher family, later runs can omit `--since-date`.
+
 ## Step 16: Run the standard full sync
 
 Before running this step, make sure the target company is open in Tally.
@@ -525,6 +555,24 @@ Sync one voucher family:
 
 ```bash
 tally-db-pipeline sync-vouchers --company "Exact Company Name" --voucher-type Sales
+```
+
+Sync one voucher family for a date range:
+
+```bash
+tally-db-pipeline sync-vouchers --company "Exact Company Name" --voucher-type Sales --from-date 2025-04-01 --to-date 2025-04-30
+```
+
+Sync one voucher family in deterministic chunks:
+
+```bash
+tally-db-pipeline sync-vouchers-chunked --company "Exact Company Name" --voucher-type Sales --from-date 2025-04-01 --to-date 2026-03-31 --chunk-days 31
+```
+
+Continue incrementally from checkpoints:
+
+```bash
+tally-db-pipeline sync-vouchers-incremental --company "Exact Company Name" --voucher-type Sales --since-date 2025-04-01
 ```
 
 Sync the standard accounting voucher families:
@@ -659,6 +707,15 @@ Fix:
 - run `tally-db-pipeline doctor --company "Exact Company Name"`
 - inspect `tally-db-pipeline report`
 - if needed, increase `TALLY_TIMEOUT_SECONDS`
+- prefer `sync-vouchers-chunked` over one large historical pull
+
+### Problem: company names contain `&` or other XML-sensitive characters
+
+Fix:
+
+- use the exact company name returned by `list-companies`
+- do not manually replace `&` with escape sequences
+- the CLI now escapes XML-sensitive values before sending them to Tally
 
 ### Problem: live Tally is unstable, but you have saved XML exports
 
@@ -676,6 +733,15 @@ tally-db-pipeline replay-xml --kind vouchers --file /path/to/day-book.xml --comp
 - Tally's API is sensitive and behaves best when requests are sent one at a time.
 - This repo is an extraction pipeline, not a replacement for Tally.
 - Always keep Tally as the source of truth unless the customer intentionally builds a downstream workflow on top of the synced database.
+
+## Additional docs in this repo
+
+- `TECHNICAL_RESOURCES.md`
+  - official Tally references and the extraction assumptions derived from them
+- `PRODUCTION_GAP_LIST.md`
+  - adversarial backlog of remaining production risks
+- `RELIABILITY_PLAN.md`
+  - execution plan for hardening this repo further
 
 ## Repo layout
 
