@@ -5,6 +5,7 @@ __pycache__/
 .env
 *.sqlite3
 data/
+support-bundles/
 dist/
 build/
 *.egg-info/
