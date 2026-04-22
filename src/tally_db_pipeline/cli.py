@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from typing import Optional
 
 import typer
@@ -43,7 +44,20 @@ def _client() -> TallyClient:
         request_delay_ms=settings.tally_request_delay_ms,
         max_retries=settings.tally_max_retries,
         retry_backoff_ms=settings.tally_retry_backoff_ms,
+        lock_file=settings.tally_lock_file,
+        lock_stale_seconds=settings.tally_lock_stale_seconds,
     )
+
+
+@contextmanager
+def _tally_client():
+    client = _client()
+    try:
+        with client as locked_client:
+            yield locked_client
+    except RuntimeError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1)
 
 
 @app.command("init-db")
@@ -54,8 +68,8 @@ def init_db_command() -> None:
 
 @app.command("ping")
 def ping() -> None:
-    client = _client()
-    result = client.test_connection()
+    with _tally_client() as client:
+        result = client.test_connection()
     if not result.get("connected"):
         typer.echo(result.get("error", "Connection failed"), err=True)
         raise typer.Exit(code=1)
@@ -69,8 +83,8 @@ def ping() -> None:
 
 @app.command("list-companies")
 def list_companies() -> None:
-    client = _client()
-    result = client.execute("companies", client.build_company_collection_xml())
+    with _tally_client() as client:
+        result = client.execute("companies", client.build_company_collection_xml())
     companies = parse_company_collection(result["response_xml"])
     for row in companies:
         if row["name"]:
@@ -79,13 +93,15 @@ def list_companies() -> None:
 
 @app.command("discover")
 def discover(company: Optional[str] = typer.Option(default=None, help="Exact company name to probe voucher-type access.")) -> None:
-    result = discover_tally(_client(), company_name=company)
+    with _tally_client() as client:
+        result = discover_tally(client, company_name=company)
     typer.echo(json.dumps(result, indent=2))
 
 
 @app.command("doctor")
 def doctor(company: Optional[str] = typer.Option(default=None, help="Exact company name for voucher-type diagnostics.")) -> None:
-    result = discover_tally(_client(), company_name=company)
+    with _tally_client() as client:
+        result = discover_tally(client, company_name=company)
     if not result["connected"]:
         companies_test = result["tests"].get("companies", {})
         typer.echo(f"FAIL: {result['warnings'][0]}", err=True)
@@ -146,23 +162,24 @@ def doctor(company: Optional[str] = typer.Option(default=None, help="Exact compa
 
 @app.command("bootstrap")
 def bootstrap(company: Optional[str] = typer.Option(default=None, help="Exact company name if already known.")) -> None:
-    result = build_bootstrap_plan(_client(), company_name=company)
+    with _tally_client() as client:
+        result = build_bootstrap_plan(client, company_name=company)
     typer.echo(json.dumps(result, indent=2))
 
 
 @app.command("sync-companies")
 def sync_companies_command() -> None:
     init_db()
-    with get_session() as session:
-        rows = sync_companies(session, _client())
+    with _tally_client() as client, get_session() as session:
+        rows = sync_companies(session, client)
     typer.echo(f"Synced {len(rows)} companies.")
 
 
 @app.command("sync-masters")
 def sync_masters_command() -> None:
     init_db()
-    with get_session() as session:
-        result = sync_masters(session, _client())
+    with _tally_client() as client, get_session() as session:
+        result = sync_masters(session, client)
     typer.echo(f"Synced masters for company: {result.get('company') or 'unknown'}")
     typer.echo(f"Groups: {result['groups']}")
     typer.echo(f"Ledgers: {result['ledgers']}")
@@ -171,8 +188,8 @@ def sync_masters_command() -> None:
 @app.command("sync-voucher-types")
 def sync_voucher_types_command(company: Optional[str] = typer.Option(default=None, help="Exact Tally company name if needed.")) -> None:
     init_db()
-    with get_session() as session:
-        rows = sync_voucher_types(session, _client(), company_name=company)
+    with _tally_client() as client, get_session() as session:
+        rows = sync_voucher_types(session, client, company_name=company)
     typer.echo(f"Synced {len(rows)} voucher types.")
 
 
@@ -184,10 +201,10 @@ def sync_vouchers_command(
     to_date: Optional[str] = typer.Option(default=None, help="Inclusive end date in YYYY-MM-DD format."),
 ) -> None:
     init_db()
-    with get_session() as session:
+    with _tally_client() as client, get_session() as session:
         result = sync_vouchers(
             session,
-            _client(),
+            client,
             company_name=company,
             voucher_type=voucher_type,
             from_date=from_date,
@@ -210,10 +227,10 @@ def sync_vouchers_chunked_command(
     min_chunk_days: int = typer.Option(1, help="Smallest window size to try when adaptive splitting is enabled."),
 ) -> None:
     init_db()
-    with get_session() as session:
+    with _tally_client() as client, get_session() as session:
         results = sync_vouchers_in_chunks(
             session,
-            _client(),
+            client,
             company_name=company,
             voucher_type=voucher_type,
             start_date=from_date,
@@ -242,10 +259,10 @@ def sync_vouchers_incremental_command(
     min_chunk_days: int = typer.Option(1, help="Smallest window size to try when adaptive splitting is enabled."),
 ) -> None:
     init_db()
-    with get_session() as session:
+    with _tally_client() as client, get_session() as session:
         results = sync_vouchers_incremental(
             session,
-            _client(),
+            client,
             company_name=company,
             voucher_type=voucher_type,
             since_date=since_date,
@@ -269,10 +286,10 @@ def profile_vouchers_command(
     to_date: str = typer.Option(..., help="Inclusive end date in YYYY-MM-DD format."),
 ) -> None:
     init_db()
-    with get_session() as session:
+    with _tally_client() as client, get_session() as session:
         result = profile_vouchers(
             session,
-            _client(),
+            client,
             company_name=company,
             from_date=from_date,
             to_date=to_date,
@@ -291,10 +308,10 @@ def profile_vouchers_chunked_command(
     continue_on_error: bool = typer.Option(False, help="Continue even if one date window fails."),
 ) -> None:
     init_db()
-    with get_session() as session:
+    with _tally_client() as client, get_session() as session:
         result = profile_vouchers_in_chunks(
             session,
-            _client(),
+            client,
             company_name=company,
             start_date=from_date,
             end_date=to_date,
@@ -312,10 +329,10 @@ def sync_standard_vouchers_command(
     continue_on_error: bool = typer.Option(False, help="Continue even if one voucher family fails."),
 ) -> None:
     init_db()
-    with get_session() as session:
+    with _tally_client() as client, get_session() as session:
         results = sync_standard_vouchers(
             session,
-            _client(),
+            client,
             company_name=company,
             continue_on_error=continue_on_error,
         )
@@ -332,8 +349,7 @@ def sync_all(
     continue_on_error: bool = typer.Option(False, help="Continue even if one voucher family fails."),
 ) -> None:
     init_db()
-    client = _client()
-    with get_session() as session:
+    with _tally_client() as client, get_session() as session:
         sync_companies(session, client)
         sync_masters(session, client)
         sync_voucher_types(session, client, company_name=company)

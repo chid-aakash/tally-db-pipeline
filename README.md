@@ -19,6 +19,8 @@ The extraction model is intentionally sequential:
 
 This is deliberate because Tally is fragile under overlapping requests.
 
+The CLI also uses a local lock file so two commands from the same machine do not hit the same Tally instance at once by accident.
+
 ## What this repo does
 
 - connects directly to TallyPrime over its HTTP/XML interface
@@ -188,6 +190,8 @@ TALLY_TIMEOUT_SECONDS=120
 TALLY_REQUEST_DELAY_MS=250
 TALLY_MAX_RETRIES=2
 TALLY_RETRY_BACKOFF_MS=1500
+TALLY_LOCK_FILE=./data/tally_http.lock
+TALLY_LOCK_STALE_SECONDS=21600
 ```
 
 Field meanings:
@@ -199,6 +203,8 @@ Field meanings:
 - `TALLY_REQUEST_DELAY_MS`: pause between requests so Tally is not hammered
 - `TALLY_MAX_RETRIES`: retry count for connection/timeouts
 - `TALLY_RETRY_BACKOFF_MS`: backoff between retries
+- `TALLY_LOCK_FILE`: local lock file that prevents concurrent Tally commands from this machine
+- `TALLY_LOCK_STALE_SECONDS`: how old a lock must be before it is considered stale
 
 ## Step 8: Confirm the machine can reach Tally
 
@@ -815,6 +821,7 @@ tally-db-pipeline replay-xml --kind vouchers --file /path/to/day-book.xml --comp
 
 - Do not run multiple large syncs in parallel against the same Tally instance.
 - Tally's API is sensitive and behaves best when requests are sent one at a time.
+- If the CLI says a local Tally lock is already held, wait for the other command to finish instead of forcing another one through.
 - This repo is an extraction pipeline, not a replacement for Tally.
 - Always keep Tally as the source of truth unless the customer intentionally builds a downstream workflow on top of the synced database.
 

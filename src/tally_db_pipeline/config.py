@@ -18,6 +18,8 @@ class Settings:
     tally_request_delay_ms: int = int(os.getenv("TALLY_REQUEST_DELAY_MS", "250"))
     tally_max_retries: int = int(os.getenv("TALLY_MAX_RETRIES", "2"))
     tally_retry_backoff_ms: int = int(os.getenv("TALLY_RETRY_BACKOFF_MS", "1500"))
+    tally_lock_file: str = os.getenv("TALLY_LOCK_FILE", "./data/tally_http.lock")
+    tally_lock_stale_seconds: int = int(os.getenv("TALLY_LOCK_STALE_SECONDS", "21600"))
 
 
 def get_settings() -> Settings:

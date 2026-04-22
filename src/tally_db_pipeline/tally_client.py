@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 import time
+from pathlib import Path
 from datetime import date, datetime
 from xml.sax.saxutils import escape
 
@@ -40,6 +42,8 @@ class TallyClient:
         request_delay_ms: int = 250,
         max_retries: int = 2,
         retry_backoff_ms: int = 1500,
+        lock_file: str = "./data/tally_http.lock",
+        lock_stale_seconds: int = 21600,
     ):
         self.host = host
         self.port = port
@@ -47,8 +51,21 @@ class TallyClient:
         self.request_delay_ms = request_delay_ms
         self.max_retries = max_retries
         self.retry_backoff_ms = retry_backoff_ms
+        self.lock_file = Path(lock_file)
+        self.lock_stale_seconds = lock_stale_seconds
         self.base_url = f"http://{host}:{port}"
         self._last_request_started_at = 0.0
+        self._lock_fd: int | None = None
+
+    def __enter__(self) -> "TallyClient":
+        self._acquire_lock()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
+    def close(self) -> None:
+        self._release_lock()
 
     def post(self, xml_payload: str) -> str:
         last_error: Exception | None = None
@@ -72,6 +89,46 @@ class TallyClient:
                     raise
                 time.sleep((self.retry_backoff_ms / 1000.0) * (attempt + 1))
         raise RuntimeError(str(last_error) if last_error else "Unknown Tally request error")
+
+    def _acquire_lock(self) -> None:
+        if self._lock_fd is not None:
+            return
+        self.lock_file.parent.mkdir(parents=True, exist_ok=True)
+        while True:
+            try:
+                fd = os.open(self.lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                payload = f"{os.getpid()} {int(time.time())}\n"
+                os.write(fd, payload.encode("utf-8"))
+                self._lock_fd = fd
+                return
+            except FileExistsError:
+                try:
+                    mtime = self.lock_file.stat().st_mtime
+                except FileNotFoundError:
+                    continue
+                age = time.time() - mtime
+                if age > self.lock_stale_seconds:
+                    try:
+                        self.lock_file.unlink()
+                    except FileNotFoundError:
+                        pass
+                    continue
+                raise RuntimeError(
+                    f"Tally lock is already held by another local command: {self.lock_file}. "
+                    "Wait for the other sync/probe to finish or delete a stale lock if you are sure no command is running."
+                )
+
+    def _release_lock(self) -> None:
+        if self._lock_fd is None:
+            return
+        try:
+            os.close(self._lock_fd)
+        finally:
+            self._lock_fd = None
+            try:
+                self.lock_file.unlink()
+            except FileNotFoundError:
+                pass
 
     def probe(self, request_type: str, request_xml: str) -> dict:
         started = time.monotonic()

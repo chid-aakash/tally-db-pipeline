@@ -55,6 +55,11 @@ This file is intentionally adversarial. Items stay here until the repo can eithe
   - Current state: some probes can still be too heavy if we are careless.
   - Needed: strict fast probes for diagnostics.
 
+- Accidental local concurrency.
+  - Current state: Tally-facing CLI commands use a local lock file to prevent overlapping commands from the same machine.
+  - Remaining gaps:
+    - no cross-machine locking, which is outside the scope of this local-first repo
+
 - Strong failure semantics for “reachable but unusable” Tally states.
   - Current state: `discover` and `doctor` now surface request durations, classify `connection_error`, `timeout`, `line_error`, and empty-data responses, and emit `health_status` plus recommended actions.
   - Remaining gaps:
