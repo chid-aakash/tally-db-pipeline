@@ -13,6 +13,7 @@ from .sync import (
     discover_tally,
     get_database_report,
     init_db,
+    replay_xml_file,
     sync_companies,
     sync_masters,
     sync_standard_vouchers,
@@ -189,4 +190,19 @@ def report() -> None:
     init_db()
     with get_session() as session:
         result = get_database_report(session)
+    typer.echo(json.dumps(result, indent=2))
+
+
+@app.command("replay-xml")
+def replay_xml(
+    kind: str = typer.Option(
+        ...,
+        help="One of: masters, stock-groups, stock-items, units, godowns, cost-centres, stock-item-balances, voucher-types, vouchers",
+    ),
+    file: str = typer.Option(..., help="Path to a saved Tally XML export."),
+    company: Optional[str] = typer.Option(default=None, help="Required for voucher replay."),
+) -> None:
+    init_db()
+    with get_session() as session:
+        result = replay_xml_file(session, kind=kind, file_path=file, company_name=company)
     typer.echo(json.dumps(result, indent=2))

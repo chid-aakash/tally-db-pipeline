@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from datetime import datetime
 
 from sqlalchemy import func, select
@@ -78,6 +79,23 @@ def _record_payload(session: Session, run: SyncRun, payload: dict, company_name:
     )
     session.add(row)
     session.commit()
+
+
+def _record_file_payload(
+    session: Session,
+    run: SyncRun,
+    request_type: str,
+    file_path: str,
+    response_xml: str,
+    company_name: str | None = None,
+) -> None:
+    payload = {
+        "request_type": request_type,
+        "request_xml": f"FILE://{file_path}",
+        "response_xml": response_xml,
+        "response_sha256": __import__("hashlib").sha256(response_xml.encode("utf-8")).hexdigest(),
+    }
+    _record_payload(session, run, payload, company_name=company_name)
 
 
 def _upsert_by_name(session: Session, model, name: str, values: dict):
@@ -366,6 +384,146 @@ def sync_standard_vouchers(
             if not continue_on_error:
                 raise
     return results
+
+
+def replay_xml_file(
+    session: Session,
+    *,
+    kind: str,
+    file_path: str,
+    company_name: str | None = None,
+) -> dict:
+    path = Path(file_path)
+    if not path.exists():
+        raise FileNotFoundError(file_path)
+
+    xml_text = path.read_text(encoding="utf-8", errors="replace")
+    run = _start_run(session, f"replay:{kind}", company_name=company_name)
+    try:
+        _record_file_payload(session, run, f"replay:{kind}", str(path), xml_text, company_name=company_name)
+
+        if kind == "masters":
+            parsed = parse_list_of_accounts(xml_text)
+            resolved_company = company_name or parsed.get("company")
+            if not parsed["groups"] and not parsed["ledgers"]:
+                raise RuntimeError("No groups or ledgers found in XML file.")
+
+            if resolved_company:
+                company = session.scalar(select(Company).where(Company.name == resolved_company))
+                if company is None:
+                    company = Company(name=resolved_company)
+                    session.add(company)
+                company.last_synced_at = datetime.utcnow()
+                session.commit()
+
+            for group in parsed["groups"]:
+                _upsert_by_name(session, Group, group["name"], {k: v for k, v in group.items() if k != "name"})
+            for ledger in parsed["ledgers"]:
+                _upsert_by_name(session, Ledger, ledger["name"], {k: v for k, v in ledger.items() if k != "name"})
+
+            _finish_run(session, run, "success")
+            return {
+                "kind": kind,
+                "company": resolved_company,
+                "groups": len(parsed["groups"]),
+                "ledgers": len(parsed["ledgers"]),
+            }
+
+        if kind in {"stock-groups", "stock-items", "units", "godowns", "cost-centres", "voucher-types"}:
+            object_type_map = {
+                "stock-groups": ("Stock Group", StockGroup),
+                "stock-items": ("Stock Item", StockItem),
+                "units": ("Unit", Unit),
+                "godowns": ("Godown", Godown),
+                "cost-centres": ("Cost Centre", CostCentre),
+                "voucher-types": ("Voucher Type", VoucherType),
+            }
+            object_type, model = object_type_map[kind]
+            rows = parse_collection(xml_text, object_type)
+            for row in rows:
+                _upsert_by_name(session, model, row["name"], {k: v for k, v in row.items() if k != "name"})
+            _finish_run(session, run, "success")
+            return {"kind": kind, "count": len(rows)}
+
+        if kind == "stock-item-balances":
+            rows = parse_stock_item_balances(xml_text)
+            for row in rows:
+                _upsert_by_name(session, StockItem, row["name"], {k: v for k, v in row.items() if k != "name"})
+            _finish_run(session, run, "success")
+            return {"kind": kind, "count": len(rows)}
+
+        if kind == "vouchers":
+            if not company_name:
+                raise RuntimeError("company_name is required for voucher replay.")
+            voucher_type_rows = [
+                {"name": row.name, "parent": row.parent, "numbering_method": row.numbering_method}
+                for row in session.scalars(select(VoucherType)).all()
+            ]
+            vouchers = parse_vouchers(xml_text)
+            saved = 0
+            for row in vouchers:
+                guid = row.get("guid")
+                if not guid:
+                    continue
+                voucher = session.scalar(select(Voucher).where(Voucher.guid == guid))
+                if voucher is None:
+                    voucher = Voucher(guid=guid, company_name=company_name, voucher_type_name=row["voucher_type_name"])
+                    session.add(voucher)
+                    session.flush()
+                else:
+                    voucher.inventory_entries.clear()
+                    voucher.ledger_entries.clear()
+
+                voucher.company_name = company_name
+                voucher.voucher_type_name = row["voucher_type_name"]
+                voucher.base_voucher_type = resolve_voucher_base_type(row["voucher_type_name"], voucher_type_rows)
+                voucher.voucher_date = row["voucher_date"]
+                voucher.voucher_number = row["voucher_number"]
+                voucher.party_name = row["party_name"]
+                voucher.narration = row["narration"]
+                voucher.party_gstin = row["party_gstin"]
+                voucher.place_of_supply = row["place_of_supply"]
+                voucher.is_cancelled = row["is_cancelled"]
+                voucher.is_optional = row["is_optional"]
+                voucher.last_synced_at = datetime.utcnow()
+
+                for item in row["inventory_entries"]:
+                    voucher.inventory_entries.append(
+                        VoucherInventoryEntry(
+                            item_name=item["item_name"],
+                            quantity=item["quantity"],
+                            uom=item["uom"],
+                            rate=item["rate"],
+                            amount=item["amount"],
+                            hsn=item["hsn"],
+                            ledger_name=item["ledger_name"],
+                            ledger_amount=item["ledger_amount"],
+                            is_deemed_positive=item["is_deemed_positive"],
+                            gst_rates_json=json.dumps(item["gst_rates"], sort_keys=True),
+                        )
+                    )
+                for item in row["ledger_entries"]:
+                    voucher.ledger_entries.append(
+                        VoucherLedgerEntry(
+                            ledger_name=item["ledger_name"],
+                            amount=item["amount"],
+                            is_deemed_positive=item["is_deemed_positive"],
+                            is_party_ledger=item["is_party_ledger"],
+                            tax_rate=item["tax_rate"],
+                            bill_allocations_json=json.dumps(item["bill_allocations"], sort_keys=True),
+                            bank_allocations_json=json.dumps(item["bank_allocations"], sort_keys=True),
+                        )
+                    )
+                saved += 1
+            session.commit()
+            _finish_run(session, run, "success")
+            return {"kind": kind, "saved": saved}
+
+        raise ValueError(f"Unsupported replay kind: {kind}")
+    except Exception as exc:
+        session.rollback()
+        _finish_run(session, run, "failed", str(exc))
+        raise
 
 
 def get_database_report(session: Session) -> dict:

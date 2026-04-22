@@ -545,6 +545,18 @@ Inspect the local database and recent run history:
 tally-db-pipeline report
 ```
 
+Replay a saved XML export into the local database:
+
+```bash
+tally-db-pipeline replay-xml --kind voucher-types --file /path/to/voucher-types.xml
+```
+
+Replay a saved voucher export:
+
+```bash
+tally-db-pipeline replay-xml --kind vouchers --file /path/to/day-book.xml --company "Exact Company Name"
+```
+
 ## Common problems
 
 ### Problem: `Cannot connect to http://<host>:<port>`
@@ -647,6 +659,16 @@ Fix:
 - run `tally-db-pipeline doctor --company "Exact Company Name"`
 - inspect `tally-db-pipeline report`
 - if needed, increase `TALLY_TIMEOUT_SECONDS`
+
+### Problem: live Tally is unstable, but you have saved XML exports
+
+You can still test parsing and database loading offline using:
+
+```bash
+tally-db-pipeline replay-xml --kind masters --file /path/to/list-of-accounts.xml
+tally-db-pipeline replay-xml --kind voucher-types --file /path/to/voucher-types.xml
+tally-db-pipeline replay-xml --kind vouchers --file /path/to/day-book.xml --company "Exact Company Name"
+```
 
 ## Notes for customers
 
