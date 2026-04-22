@@ -10,6 +10,7 @@ from .db import get_session
 from .parsers import parse_company_collection
 from .sync import (
     STANDARD_VOUCHER_TYPES,
+    create_support_bundle,
     discover_tally,
     get_database_report,
     init_db,
@@ -338,6 +339,23 @@ def report() -> None:
     init_db()
     with get_session() as session:
         result = get_database_report(session)
+    typer.echo(json.dumps(result, indent=2))
+
+
+@app.command("support-bundle")
+def support_bundle(
+    output_directory: str = typer.Option("./support-bundles", help="Directory where the support bundle should be created."),
+    include_payload_bodies: bool = typer.Option(False, help="Include full request and response XML in the bundle."),
+    payload_limit: int = typer.Option(5, help="Number of recent payloads to include."),
+) -> None:
+    init_db()
+    with get_session() as session:
+        result = create_support_bundle(
+            session,
+            output_directory=output_directory,
+            include_payload_bodies=include_payload_bodies,
+            payload_limit=payload_limit,
+        )
     typer.echo(json.dumps(result, indent=2))
 
 

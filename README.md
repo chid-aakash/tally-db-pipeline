@@ -629,6 +629,18 @@ Inspect the local database and recent run history:
 tally-db-pipeline report
 ```
 
+Create a support bundle for troubleshooting:
+
+```bash
+tally-db-pipeline support-bundle
+```
+
+Include recent raw XML bodies too:
+
+```bash
+tally-db-pipeline support-bundle --include-payload-bodies --payload-limit 3
+```
+
 Replay a saved XML export into the local database:
 
 ```bash
@@ -785,6 +797,12 @@ For repeatable offline regression against the saved XML bundle:
 ```bash
 source .venv/bin/activate
 python scripts/check_replay_counts.py
+```
+
+When troubleshooting a customer environment, prefer sending a support bundle instead of screenshots:
+
+```bash
+tally-db-pipeline support-bundle
 ```
 
 ## Repo layout

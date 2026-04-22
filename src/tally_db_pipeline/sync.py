@@ -8,6 +8,7 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .config import get_settings
 from .db import engine
 from .models import (
     Base,
@@ -1135,6 +1136,75 @@ def get_database_report(session: Session) -> dict:
         "running_syncs": count_running_syncs(session),
         "latest_voucher_syncs": latest_voucher_syncs,
         "recent_runs": recent_runs,
+    }
+
+
+def create_support_bundle(
+    session: Session,
+    *,
+    output_directory: str,
+    include_payload_bodies: bool = False,
+    payload_limit: int = 5,
+) -> dict:
+    output_dir = Path(output_directory)
+    timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    bundle_dir = output_dir / f"tally-support-bundle-{timestamp}"
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+
+    settings = get_settings()
+    report = get_database_report(session)
+    settings_snapshot = {
+        "tally_host": settings.tally_host,
+        "tally_port": settings.tally_port,
+        "database_url": settings.database_url,
+        "tally_timeout_seconds": settings.tally_timeout_seconds,
+        "tally_request_delay_ms": settings.tally_request_delay_ms,
+        "tally_max_retries": settings.tally_max_retries,
+        "tally_retry_backoff_ms": settings.tally_retry_backoff_ms,
+    }
+
+    recent_payloads = []
+    payload_rows = session.scalars(select(RawPayload).order_by(RawPayload.id.desc()).limit(payload_limit)).all()
+    for row in payload_rows:
+        item = {
+            "id": row.id,
+            "sync_run_id": row.sync_run_id,
+            "request_type": row.request_type,
+            "company_name": row.company_name,
+            "response_sha256": row.response_sha256,
+            "created_at": row.created_at.isoformat(timespec="seconds") if row.created_at else None,
+            "request_length": len(row.request_xml or ""),
+            "response_length": len(row.response_xml or ""),
+        }
+        if include_payload_bodies:
+            item["request_xml"] = row.request_xml
+            item["response_xml"] = row.response_xml
+        recent_payloads.append(item)
+
+    (bundle_dir / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    (bundle_dir / "settings.json").write_text(json.dumps(settings_snapshot, indent=2), encoding="utf-8")
+    (bundle_dir / "recent_payloads.json").write_text(json.dumps(recent_payloads, indent=2), encoding="utf-8")
+    (bundle_dir / "README.txt").write_text(
+        "\n".join(
+            [
+                "Tally support bundle",
+                "",
+                "Files:",
+                "- report.json: local database and sync status snapshot",
+                "- settings.json: local runtime settings snapshot",
+                "- recent_payloads.json: recent raw payload metadata",
+            ]
+            + (["- recent_payloads.json includes full request/response XML bodies"] if include_payload_bodies else [])
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    return {
+        "bundle_directory": str(bundle_dir),
+        "files": ["README.txt", "report.json", "settings.json", "recent_payloads.json"],
+        "recent_payload_count": len(recent_payloads),
+        "include_payload_bodies": include_payload_bodies,
     }
 
 

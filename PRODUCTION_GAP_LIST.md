@@ -82,6 +82,12 @@ This file is intentionally adversarial. Items stay here until the repo can eithe
 - Better reporting around partial success.
   - Needed: show which families succeeded, failed, timed out, or returned zero rows.
 
+- Support/debug handoff bundles.
+  - Current state: `support-bundle` exports a local report, settings snapshot, and recent payload metadata.
+  - Remaining gaps:
+    - no log file rotation yet
+    - no redaction mode for payload bodies yet
+
 - Retention or dedupe policy for raw payloads.
   - Current state: every payload is retained forever.
 
