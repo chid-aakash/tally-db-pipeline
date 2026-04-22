@@ -44,7 +44,7 @@ This file is intentionally adversarial. Items stay here until the repo can eithe
   - Remaining gaps:
     - chunk sizing starts static but now supports adaptive window splitting on failure
     - no response-size-aware tuning yet
-    - no automatic company fiscal-year discovery yet
+    - no automatic company fiscal-year discovery beyond company-name inference yet
 
 - XML-safe request construction.
   - Current state: dynamic XML values are now escaped before sending requests.
@@ -59,6 +59,12 @@ This file is intentionally adversarial. Items stay here until the repo can eithe
   - Current state: `discover` and `doctor` now surface request durations, classify `connection_error`, `timeout`, `line_error`, and empty-data responses, and emit `health_status` plus recommended actions.
   - Remaining gaps:
     - no probe history/trend view yet
+
+- Master-data extraction strategy.
+  - Current state: `sync-masters` now uses collection-based group and ledger pulls instead of starting with the heavy `List of Accounts` exploded report.
+  - Remaining gaps:
+    - report-based fallback is still absent if some installs behave differently on collections
+    - need broader live validation on other Tally datasets
 
 ## High
 
