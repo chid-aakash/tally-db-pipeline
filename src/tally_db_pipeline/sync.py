@@ -694,6 +694,123 @@ def profile_vouchers(
         raise
 
 
+def profile_vouchers_in_chunks(
+    session: Session,
+    client: TallyClient,
+    *,
+    company_name: str,
+    start_date: str,
+    end_date: str,
+    chunk_days: int = 31,
+    adaptive: bool = True,
+    min_chunk_days: int = 1,
+    continue_on_error: bool = False,
+) -> dict:
+    aggregate: dict[str, dict] = {}
+    windows: list[dict] = []
+
+    for from_date, to_date in _iter_date_windows(start_date, end_date, chunk_days):
+        try:
+            result = profile_vouchers(
+                session,
+                client,
+                company_name=company_name,
+                from_date=from_date,
+                to_date=to_date,
+            )
+            windows.append(
+                {
+                    "from_date": from_date,
+                    "to_date": to_date,
+                    "total_vouchers": result["total_vouchers"],
+                    "voucher_type_count": len(result["voucher_types"]),
+                }
+            )
+            for item in result["voucher_types"]:
+                row = aggregate.setdefault(
+                    item["voucher_type_name"],
+                    {
+                        "voucher_type_name": item["voucher_type_name"],
+                        "base_voucher_type": item["base_voucher_type"],
+                        "count": 0,
+                        "first_date": None,
+                        "last_date": None,
+                    },
+                )
+                row["count"] += item["count"]
+                if item["first_date"] and (row["first_date"] is None or item["first_date"] < row["first_date"]):
+                    row["first_date"] = item["first_date"]
+                if item["last_date"] and (row["last_date"] is None or item["last_date"] > row["last_date"]):
+                    row["last_date"] = item["last_date"]
+        except Exception as exc:
+            window_days = _window_day_count(from_date, to_date)
+            if adaptive and window_days > min_chunk_days:
+                split_windows = _split_window(from_date, to_date)
+                if split_windows is not None:
+                    left_window, right_window = split_windows
+                    left_result = profile_vouchers_in_chunks(
+                        session,
+                        client,
+                        company_name=company_name,
+                        start_date=left_window[0],
+                        end_date=left_window[1],
+                        chunk_days=_window_day_count(left_window[0], left_window[1]),
+                        adaptive=adaptive,
+                        min_chunk_days=min_chunk_days,
+                        continue_on_error=continue_on_error,
+                    )
+                    right_result = profile_vouchers_in_chunks(
+                        session,
+                        client,
+                        company_name=company_name,
+                        start_date=right_window[0],
+                        end_date=right_window[1],
+                        chunk_days=_window_day_count(right_window[0], right_window[1]),
+                        adaptive=adaptive,
+                        min_chunk_days=min_chunk_days,
+                        continue_on_error=continue_on_error,
+                    )
+                    windows.extend(left_result["windows"])
+                    windows.extend(right_result["windows"])
+                    for partial in (left_result["voucher_types"], right_result["voucher_types"]):
+                        for item in partial:
+                            row = aggregate.setdefault(
+                                item["voucher_type_name"],
+                                {
+                                    "voucher_type_name": item["voucher_type_name"],
+                                    "base_voucher_type": item["base_voucher_type"],
+                                    "count": 0,
+                                    "first_date": None,
+                                    "last_date": None,
+                                },
+                            )
+                            row["count"] += item["count"]
+                            if item["first_date"] and (row["first_date"] is None or item["first_date"] < row["first_date"]):
+                                row["first_date"] = item["first_date"]
+                            if item["last_date"] and (row["last_date"] is None or item["last_date"] > row["last_date"]):
+                                row["last_date"] = item["last_date"]
+                    continue
+
+            error_window = {
+                "from_date": from_date,
+                "to_date": to_date,
+                "error": str(exc),
+            }
+            windows.append(error_window)
+            if not continue_on_error:
+                raise
+
+    voucher_types = sorted(aggregate.values(), key=lambda row: (-row["count"], row["voucher_type_name"]))
+    return {
+        "company_name": company_name,
+        "from_date": start_date,
+        "to_date": end_date,
+        "total_vouchers": sum(item["count"] for item in voucher_types),
+        "voucher_types": voucher_types,
+        "windows": windows,
+    }
+
+
 def sync_standard_vouchers(
     session: Session,
     client: TallyClient,

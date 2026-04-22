@@ -433,6 +433,12 @@ If the customer does not know which voucher families are actually used, profile 
 tally-db-pipeline profile-vouchers --company "Shanke Pvt Ltd - 2025-26" --from-date 2025-04-01 --to-date 2026-03-31
 ```
 
+For larger profiling ranges, use the chunked profiler:
+
+```bash
+tally-db-pipeline profile-vouchers-chunked --company "Shanke Pvt Ltd - 2025-26" --from-date 2025-04-01 --to-date 2026-03-31 --chunk-days 31
+```
+
 ## Step 16: Run the standard full sync
 
 Before running this step, make sure the target company is open in Tally.
@@ -585,6 +591,12 @@ Profile voucher families in a date range:
 
 ```bash
 tally-db-pipeline profile-vouchers --company "Exact Company Name" --from-date 2025-04-01 --to-date 2026-03-31
+```
+
+Profile voucher families with chunked windows:
+
+```bash
+tally-db-pipeline profile-vouchers-chunked --company "Exact Company Name" --from-date 2025-04-01 --to-date 2026-03-31 --chunk-days 31
 ```
 
 Sync the standard accounting voucher families:
