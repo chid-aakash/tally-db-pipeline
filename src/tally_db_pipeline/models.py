@@ -216,6 +216,10 @@ class Voucher(Base):
         back_populates="voucher",
         cascade="all, delete-orphan",
     )
+    unknown_sections: Mapped[list["VoucherUnknownSection"]] = relationship(
+        back_populates="voucher",
+        cascade="all, delete-orphan",
+    )
 
 
 class VoucherInventoryEntry(Base):
@@ -251,3 +255,14 @@ class VoucherLedgerEntry(Base):
     bank_allocations_json: Mapped[str | None] = mapped_column(Text)
 
     voucher: Mapped["Voucher"] = relationship(back_populates="ledger_entries")
+
+
+class VoucherUnknownSection(Base):
+    __tablename__ = "voucher_unknown_sections"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    voucher_id: Mapped[int] = mapped_column(ForeignKey("vouchers.id"), nullable=False)
+    section_tag: Mapped[str] = mapped_column(String(255), nullable=False)
+    section_xml: Mapped[str] = mapped_column(Text, nullable=False)
+
+    voucher: Mapped["Voucher"] = relationship(back_populates="unknown_sections")

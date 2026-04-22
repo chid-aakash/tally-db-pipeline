@@ -72,7 +72,10 @@ This file is intentionally adversarial. Items stay here until the repo can eithe
     - no company-wide auto-walk across multiple fiscal years yet
 
 - Unknown/custom structure preservation.
-  - Needed: store unmapped or custom object sections so we do not silently lose data.
+  - Current state: unknown/custom voucher child sections are preserved per voucher in `voucher_unknown_sections`.
+  - Remaining gaps:
+    - no normalization yet for those preserved sections
+    - master-data custom sections are not preserved separately yet
 
 - Better reporting around partial success.
   - Needed: show which families succeeded, failed, timed out, or returned zero rows.

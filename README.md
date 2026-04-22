@@ -41,6 +41,7 @@ This is deliberate because Tally is fragile under overlapping requests.
 - vouchers
 - voucher inventory lines
 - voucher ledger lines
+- unknown/custom voucher XML sections that were not normalized yet
 - raw XML payloads for every sync request
 - sync run history
 - sync checkpoints for incremental voucher pulls

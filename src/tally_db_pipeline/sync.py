@@ -24,6 +24,7 @@ from .models import (
     Voucher,
     VoucherInventoryEntry,
     VoucherLedgerEntry,
+    VoucherUnknownSection,
     VoucherType,
 )
 from .parsers import (
@@ -437,6 +438,7 @@ def sync_vouchers(
             else:
                 voucher.inventory_entries.clear()
                 voucher.ledger_entries.clear()
+                voucher.unknown_sections.clear()
 
             voucher.company_name = company_name
             voucher.voucher_type_name = row["voucher_type_name"]
@@ -477,6 +479,14 @@ def sync_vouchers(
                         tax_rate=item["tax_rate"],
                         bill_allocations_json=json.dumps(item["bill_allocations"], sort_keys=True),
                         bank_allocations_json=json.dumps(item["bank_allocations"], sort_keys=True),
+                    )
+                )
+
+            for item in row["unknown_sections"]:
+                voucher.unknown_sections.append(
+                    VoucherUnknownSection(
+                        section_tag=item["tag"],
+                        section_xml=item["xml"],
                     )
                 )
 
@@ -925,6 +935,7 @@ def replay_xml_file(
                 else:
                     voucher.inventory_entries.clear()
                     voucher.ledger_entries.clear()
+                    voucher.unknown_sections.clear()
 
                 voucher.company_name = company_name
                 voucher.voucher_type_name = row["voucher_type_name"]
@@ -964,6 +975,13 @@ def replay_xml_file(
                             tax_rate=item["tax_rate"],
                             bill_allocations_json=json.dumps(item["bill_allocations"], sort_keys=True),
                             bank_allocations_json=json.dumps(item["bank_allocations"], sort_keys=True),
+                        )
+                    )
+                for item in row["unknown_sections"]:
+                    voucher.unknown_sections.append(
+                        VoucherUnknownSection(
+                            section_tag=item["tag"],
+                            section_xml=item["xml"],
                         )
                     )
                 saved += 1
@@ -1058,6 +1076,7 @@ def get_database_report(session: Session) -> dict:
         "vouchers": count(Voucher),
         "voucher_inventory_entries": count(VoucherInventoryEntry),
         "voucher_ledger_entries": count(VoucherLedgerEntry),
+        "voucher_unknown_sections": count(VoucherUnknownSection),
         "raw_payloads": count(RawPayload),
         "checkpoints": [
             {

@@ -267,6 +267,7 @@ def parse_vouchers(xml_string: str | bytes) -> list[dict]:
             "guid": _text(el, "GUID"),
             "inventory_entries": [],
             "ledger_entries": [],
+            "unknown_sections": [],
         }
 
         for inv_el in el.findall("ALLINVENTORYENTRIES.LIST"):
@@ -350,6 +351,33 @@ def parse_vouchers(xml_string: str | bytes) -> list[dict]:
                     "bank_allocations": bank_allocations,
                 }
             )
+
+        known_tags = {
+            "DATE",
+            "GUID",
+            "NARRATION",
+            "PARTYGSTIN",
+            "PLACEOFSUPPLY",
+            "VOUCHERNUMBER",
+            "VOUCHERTYPENAME",
+            "PARTYLEDGERNAME",
+            "PARTYNAME",
+            "ISCANCELLED",
+            "ISOPTIONAL",
+            "ALLINVENTORYENTRIES.LIST",
+            "ALLLEDGERENTRIES.LIST",
+            "LEDGERENTRIES.LIST",
+        }
+        for child in el:
+            if child.tag in known_tags:
+                continue
+            if child.tag.endswith(".LIST") or list(child):
+                voucher["unknown_sections"].append(
+                    {
+                        "tag": child.tag,
+                        "xml": ET.tostring(child, encoding="unicode"),
+                    }
+                )
 
         vouchers.append(voucher)
 
