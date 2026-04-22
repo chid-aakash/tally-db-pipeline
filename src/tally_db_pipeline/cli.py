@@ -41,6 +41,21 @@ from .tally_client import TallyClient
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 
 
+def _emit_chunk_progress(event: dict) -> None:
+    if event["event"] == "start":
+        typer.echo(f"{event['from_date']}..{event['to_date']}: START")
+        return
+    if event["event"] == "success":
+        line = f"{event['from_date']}..{event['to_date']}: {event['saved']}"
+        matched_voucher_types = event.get("matched_voucher_types") or []
+        if matched_voucher_types:
+            line += f" [{', '.join(matched_voucher_types)}]"
+        typer.echo(line)
+        return
+    if event["event"] == "error":
+        typer.echo(f"{event['from_date']}..{event['to_date']}: ERROR - {event['error']}")
+
+
 def command(name: str):
     def decorator(func):
         @app.command(name)
@@ -244,6 +259,9 @@ def sync_vouchers_command(
             range_mode=range_mode,
         )
     typer.echo(f"Synced {result['saved']} vouchers for type: {result['voucher_type']}")
+    matched_voucher_types = result.get("matched_voucher_types") or []
+    if matched_voucher_types:
+        typer.echo(f"Matched exact voucher types: {', '.join(matched_voucher_types)}")
     if result.get("from_date") or result.get("to_date"):
         typer.echo(f"Date range: {result.get('from_date') or result.get('to_date')} to {result.get('to_date') or result.get('from_date')}")
 
@@ -259,6 +277,7 @@ def sync_vouchers_chunked_command(
     adaptive: bool = typer.Option(True, help="Automatically split failed date windows into smaller windows."),
     min_chunk_days: int = typer.Option(1, help="Smallest window size to try when adaptive splitting is enabled."),
     range_mode: str = typer.Option("collection", help="Range export strategy for dated voucher pulls: collection or daybook."),
+    newest_first: bool = typer.Option(True, help="Process the newest windows first so recent data lands before older history."),
 ) -> None:
     init_db()
     with _tally_client() as client, get_session() as session:
@@ -274,12 +293,11 @@ def sync_vouchers_chunked_command(
             adaptive=adaptive,
             min_chunk_days=min_chunk_days,
             range_mode=range_mode,
+            newest_first=newest_first,
+            progress_callback=_emit_chunk_progress,
         )
-    for result in results:
-        if result.get("error"):
-            typer.echo(f"{result['from_date']}..{result['to_date']}: ERROR - {result['error']}")
-        else:
-            typer.echo(f"{result['from_date']}..{result['to_date']}: {result['saved']}")
+    if not results:
+        typer.echo("No windows were processed.")
 
 
 @command("sync-vouchers-incremental")
@@ -293,6 +311,7 @@ def sync_vouchers_incremental_command(
     adaptive: bool = typer.Option(True, help="Automatically split failed date windows into smaller windows."),
     min_chunk_days: int = typer.Option(1, help="Smallest window size to try when adaptive splitting is enabled."),
     range_mode: str = typer.Option("collection", help="Range export strategy for dated voucher pulls: collection or daybook."),
+    newest_first: bool = typer.Option(True, help="Process the newest windows first so recent data lands before older history."),
 ) -> None:
     init_db()
     with _tally_client() as client, get_session() as session:
@@ -308,12 +327,11 @@ def sync_vouchers_incremental_command(
             adaptive=adaptive,
             min_chunk_days=min_chunk_days,
             range_mode=range_mode,
+            newest_first=newest_first,
+            progress_callback=_emit_chunk_progress,
         )
-    for result in results:
-        if result.get("error"):
-            typer.echo(f"{result['from_date']}..{result['to_date']}: ERROR - {result['error']}")
-        else:
-            typer.echo(f"{result['from_date']}..{result['to_date']}: {result['saved']}")
+    if not results:
+        typer.echo("No windows were processed.")
 
 
 @command("profile-vouchers")

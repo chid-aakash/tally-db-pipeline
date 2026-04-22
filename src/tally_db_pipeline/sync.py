@@ -4,6 +4,7 @@ import json
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Callable
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
@@ -297,7 +298,13 @@ def _next_day(raw: str) -> str:
     return _format_iso_date(_parse_iso_date(raw) + timedelta(days=1))
 
 
-def _iter_date_windows(start_date: str, end_date: str, chunk_days: int) -> list[tuple[str, str]]:
+def _iter_date_windows(
+    start_date: str,
+    end_date: str,
+    chunk_days: int,
+    *,
+    newest_first: bool = False,
+) -> list[tuple[str, str]]:
     if chunk_days <= 0:
         raise ValueError("chunk_days must be positive.")
     start = _parse_iso_date(start_date)
@@ -313,6 +320,8 @@ def _iter_date_windows(start_date: str, end_date: str, chunk_days: int) -> list[
         window_end = min(cursor + delta, end)
         windows.append((_format_iso_date(cursor), _format_iso_date(window_end)))
         cursor = window_end + one_day
+    if newest_first:
+        windows.reverse()
     return windows
 
 
@@ -975,11 +984,16 @@ def sync_vouchers(
             vouchers = parse_vouchers(payload["response_xml"])
 
         saved = 0
+        exact_voucher_types: set[str] = set()
         latest_marker = None
         for row in vouchers:
             guid = row.get("guid")
             if not guid:
                 continue
+
+            voucher_type_name = row.get("voucher_type_name")
+            if voucher_type_name:
+                exact_voucher_types.add(voucher_type_name)
 
             voucher = session.scalar(select(Voucher).where(Voucher.guid == guid))
             if voucher is None:
@@ -1056,7 +1070,14 @@ def sync_vouchers(
             marker=latest_marker,
         )
         _finish_run(session, run, "success")
-        return {"voucher_type": voucher_type, "saved": saved, "from_date": from_date, "to_date": to_date, "range_mode": effective_range_mode}
+        return {
+            "voucher_type": voucher_type,
+            "saved": saved,
+            "from_date": from_date,
+            "to_date": to_date,
+            "range_mode": effective_range_mode,
+            "matched_voucher_types": sorted(exact_voucher_types),
+        }
     except Exception as exc:
         session.rollback()
         _upsert_checkpoint(
@@ -1083,21 +1104,34 @@ def sync_vouchers_in_chunks(
     adaptive: bool = True,
     min_chunk_days: int = 1,
     range_mode: str = "collection",
+    newest_first: bool = True,
+    progress_callback: Callable[[dict], None] | None = None,
 ) -> list[dict]:
     results: list[dict] = []
-    for from_date, to_date in _iter_date_windows(start_date, end_date, chunk_days):
-        try:
-            results.append(
-                sync_vouchers(
-                    session,
-                    client,
-                    company_name=company_name,
-                    voucher_type=voucher_type,
-                    from_date=from_date,
-                    to_date=to_date,
-                    range_mode=range_mode,
-                )
+    for from_date, to_date in _iter_date_windows(start_date, end_date, chunk_days, newest_first=newest_first):
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "event": "start",
+                    "voucher_type": voucher_type,
+                    "from_date": from_date,
+                    "to_date": to_date,
+                    "range_mode": range_mode,
+                }
             )
+        try:
+            result = sync_vouchers(
+                session,
+                client,
+                company_name=company_name,
+                voucher_type=voucher_type,
+                from_date=from_date,
+                to_date=to_date,
+                range_mode=range_mode,
+            )
+            results.append(result)
+            if progress_callback is not None:
+                progress_callback({"event": "success", **result})
         except Exception as exc:
             window_days = _window_day_count(from_date, to_date)
             if adaptive and window_days > min_chunk_days:
@@ -1117,6 +1151,8 @@ def sync_vouchers_in_chunks(
                             adaptive=adaptive,
                             min_chunk_days=min_chunk_days,
                             range_mode=range_mode,
+                            newest_first=newest_first,
+                            progress_callback=progress_callback,
                         )
                     )
                     results.extend(
@@ -1132,6 +1168,8 @@ def sync_vouchers_in_chunks(
                             adaptive=adaptive,
                             min_chunk_days=min_chunk_days,
                             range_mode=range_mode,
+                            newest_first=newest_first,
+                            progress_callback=progress_callback,
                         )
                     )
                     continue
@@ -1144,6 +1182,8 @@ def sync_vouchers_in_chunks(
                 "range_mode": range_mode,
             }
             results.append(result)
+            if progress_callback is not None:
+                progress_callback({"event": "error", **result})
             if not continue_on_error:
                 raise
     return results
@@ -1162,6 +1202,8 @@ def sync_vouchers_incremental(
     adaptive: bool = True,
     min_chunk_days: int = 1,
     range_mode: str = "collection",
+    newest_first: bool = True,
+    progress_callback: Callable[[dict], None] | None = None,
 ) -> list[dict]:
     checkpoint = _get_checkpoint(session, entity_type=f"vouchers:{voucher_type}", company_name=company_name)
     start_date = since_date
@@ -1186,6 +1228,8 @@ def sync_vouchers_incremental(
         adaptive=adaptive,
         min_chunk_days=min_chunk_days,
         range_mode=range_mode,
+        newest_first=newest_first,
+        progress_callback=progress_callback,
     )
 
 

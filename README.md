@@ -4,6 +4,11 @@ Standalone local-first pipeline for pulling data from TallyPrime and storing it 
 
 This repo does not depend on Sena, Frappe, or any other internal platform code. It is intended to be cloned and run directly by the customer on their own machine.
 
+Practical status documents:
+
+- [LIVE_VALIDATION_NOTES.md](LIVE_VALIDATION_NOTES.md): what has been proven against real Tally installs
+- [PRODUCTION_GAP_LIST.md](PRODUCTION_GAP_LIST.md): adversarial backlog of what still needs hardening
+
 The current design is:
 
 `CLI on your machine -> Tally HTTP/XML API -> local database`
@@ -26,6 +31,7 @@ Important safety behavior:
 - chunked, incremental, and profiled voucher commands validate that voucher dates returned by Tally stay inside the requested date window
 - if Tally returns out-of-range voucher dates, the command fails instead of silently writing incorrect history
 - some Tally installs appear to ignore or behave inconsistently with Day Book date variables, so this guard is intentional
+- voucher-family sync requests may match multiple exact Tally voucher types under one normalized family, and the CLI will now print the matched exact types
 
 ## What this repo does
 

@@ -4,6 +4,8 @@ Working list of features, risks, and hardening work needed to make `tally-db-pip
 
 This file is intentionally adversarial. Items stay here until the repo can either handle them deterministically or fail clearly with operator guidance.
 
+See also [LIVE_VALIDATION_NOTES.md](LIVE_VALIDATION_NOTES.md) for the running truth source from real Tally environments.
+
 ## Current findings from live testing
 
 - Tally can accept TCP connections and still return no visible companies.
@@ -103,7 +105,10 @@ This file is intentionally adversarial. Items stay here until the repo can eithe
     - master-data custom sections are not preserved separately yet
 
 - Better reporting around partial success.
-  - Needed: show which families succeeded, failed, timed out, or returned zero rows.
+  - Current state: we can see per-run outcomes in `sync_runs`, and the single-family CLI now exposes matched exact voucher types for normalized family requests.
+  - Remaining gaps:
+    - chunked/backfill commands still need clearer progress and per-window summaries
+    - operator-facing reporting should clearly distinguish "family visible in profile" from "family proven at scale"
 
 - Support/debug handoff bundles.
   - Current state: `support-bundle` exports a local report, settings snapshot, and recent payload metadata, with optional payload-body redaction.
@@ -131,7 +136,7 @@ This file is intentionally adversarial. Items stay here until the repo can eithe
   - Needed: support weird voucher families or custom extraction logic without forking the core repo.
 
 - Safer long-running command ergonomics.
-  - Needed: progress messages, elapsed time, and better timeout suggestions.
+  - Needed: progress messages, elapsed time, first-chunk visibility, and better timeout suggestions.
 
 ## Lower priority
 
