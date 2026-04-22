@@ -42,8 +42,8 @@ This file is intentionally adversarial. Items stay here until the repo can eithe
 - Chunked voucher extraction.
   - Current state: date-window chunking exists for voucher pulls.
   - Remaining gaps:
-    - chunk sizing is static
-    - no adaptive retry/downshift when a window is still too large
+    - chunk sizing starts static but now supports adaptive window splitting on failure
+    - no response-size-aware tuning yet
     - no automatic company fiscal-year discovery yet
 
 - XML-safe request construction.
@@ -66,7 +66,10 @@ This file is intentionally adversarial. Items stay here until the repo can eithe
   - Needed: repeatable test matrix over all saved XML files.
 
 - Voucher-family profiling.
-  - Needed: identify which families actually exist in a customer dataset before attempting sync.
+  - Current state: `profile-vouchers` can inspect a date range and summarize voucher types seen in Day Book output.
+  - Remaining gaps:
+    - no fiscal-year auto-discovery
+    - no multi-window aggregate profiling yet for extremely large datasets
 
 - Unknown/custom structure preservation.
   - Needed: store unmapped or custom object sections so we do not silently lose data.

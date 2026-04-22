@@ -427,6 +427,12 @@ tally-db-pipeline sync-vouchers-incremental --company "Shanke Pvt Ltd - 2025-26"
 
 Once a checkpoint exists for that company and voucher family, later runs can omit `--since-date`.
 
+If the customer does not know which voucher families are actually used, profile a date range first:
+
+```bash
+tally-db-pipeline profile-vouchers --company "Shanke Pvt Ltd - 2025-26" --from-date 2025-04-01 --to-date 2026-03-31
+```
+
 ## Step 16: Run the standard full sync
 
 Before running this step, make sure the target company is open in Tally.
@@ -575,6 +581,12 @@ Continue incrementally from checkpoints:
 tally-db-pipeline sync-vouchers-incremental --company "Exact Company Name" --voucher-type Sales --since-date 2025-04-01
 ```
 
+Profile voucher families in a date range:
+
+```bash
+tally-db-pipeline profile-vouchers --company "Exact Company Name" --from-date 2025-04-01 --to-date 2026-03-31
+```
+
 Sync the standard accounting voucher families:
 
 ```bash
@@ -708,6 +720,7 @@ Fix:
 - inspect `tally-db-pipeline report`
 - if needed, increase `TALLY_TIMEOUT_SECONDS`
 - prefer `sync-vouchers-chunked` over one large historical pull
+- keep adaptive chunk splitting enabled unless you are debugging a specific window manually
 
 ### Problem: company names contain `&` or other XML-sensitive characters
 
@@ -742,6 +755,13 @@ tally-db-pipeline replay-xml --kind vouchers --file /path/to/day-book.xml --comp
   - adversarial backlog of remaining production risks
 - `RELIABILITY_PLAN.md`
   - execution plan for hardening this repo further
+
+For repeatable offline regression against the saved XML bundle:
+
+```bash
+source .venv/bin/activate
+python scripts/check_replay_counts.py
+```
 
 ## Repo layout
 

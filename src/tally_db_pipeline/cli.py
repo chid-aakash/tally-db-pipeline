@@ -13,6 +13,7 @@ from .sync import (
     discover_tally,
     get_database_report,
     init_db,
+    profile_vouchers,
     replay_xml_file,
     replay_xml_bundle,
     sync_companies,
@@ -163,6 +164,8 @@ def sync_vouchers_chunked_command(
     to_date: str = typer.Option(..., help="Inclusive end date in YYYY-MM-DD format."),
     chunk_days: int = typer.Option(31, help="Chunk size in days."),
     continue_on_error: bool = typer.Option(False, help="Continue even if one date window fails."),
+    adaptive: bool = typer.Option(True, help="Automatically split failed date windows into smaller windows."),
+    min_chunk_days: int = typer.Option(1, help="Smallest window size to try when adaptive splitting is enabled."),
 ) -> None:
     init_db()
     with get_session() as session:
@@ -175,6 +178,8 @@ def sync_vouchers_chunked_command(
             end_date=to_date,
             chunk_days=chunk_days,
             continue_on_error=continue_on_error,
+            adaptive=adaptive,
+            min_chunk_days=min_chunk_days,
         )
     for result in results:
         if result.get("error"):
@@ -191,6 +196,8 @@ def sync_vouchers_incremental_command(
     until_date: Optional[str] = typer.Option(default=None, help="Inclusive end date in YYYY-MM-DD format. Defaults to today."),
     chunk_days: int = typer.Option(31, help="Chunk size in days."),
     continue_on_error: bool = typer.Option(False, help="Continue even if one date window fails."),
+    adaptive: bool = typer.Option(True, help="Automatically split failed date windows into smaller windows."),
+    min_chunk_days: int = typer.Option(1, help="Smallest window size to try when adaptive splitting is enabled."),
 ) -> None:
     init_db()
     with get_session() as session:
@@ -203,12 +210,32 @@ def sync_vouchers_incremental_command(
             until_date=until_date,
             chunk_days=chunk_days,
             continue_on_error=continue_on_error,
+            adaptive=adaptive,
+            min_chunk_days=min_chunk_days,
         )
     for result in results:
         if result.get("error"):
             typer.echo(f"{result['from_date']}..{result['to_date']}: ERROR - {result['error']}")
         else:
             typer.echo(f"{result['from_date']}..{result['to_date']}: {result['saved']}")
+
+
+@app.command("profile-vouchers")
+def profile_vouchers_command(
+    company: str = typer.Option(..., help="Exact Tally company name, including FY suffix where applicable."),
+    from_date: str = typer.Option(..., help="Inclusive start date in YYYY-MM-DD format."),
+    to_date: str = typer.Option(..., help="Inclusive end date in YYYY-MM-DD format."),
+) -> None:
+    init_db()
+    with get_session() as session:
+        result = profile_vouchers(
+            session,
+            _client(),
+            company_name=company,
+            from_date=from_date,
+            to_date=to_date,
+        )
+    typer.echo(json.dumps(result, indent=2))
 
 
 @app.command("sync-standard-vouchers")

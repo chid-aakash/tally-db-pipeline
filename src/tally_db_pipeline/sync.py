@@ -177,6 +177,23 @@ def _iter_date_windows(start_date: str, end_date: str, chunk_days: int) -> list[
     return windows
 
 
+def _window_day_count(start_date: str, end_date: str) -> int:
+    start = _parse_iso_date(start_date)
+    end = _parse_iso_date(end_date)
+    return (end - start).days + 1
+
+
+def _split_window(start_date: str, end_date: str) -> tuple[tuple[str, str], tuple[str, str]] | None:
+    total_days = _window_day_count(start_date, end_date)
+    if total_days <= 1:
+        return None
+    start = _parse_iso_date(start_date)
+    midpoint = start + timedelta(days=(total_days // 2) - 1)
+    first_end = _format_iso_date(midpoint)
+    second_start = _next_day(first_end)
+    return ((start_date, first_end), (second_start, end_date))
+
+
 def _get_checkpoint(session: Session, *, entity_type: str, company_name: str | None) -> SyncCheckpoint | None:
     normalized_company = company_name or ""
     return session.scalar(
@@ -502,6 +519,8 @@ def sync_vouchers_in_chunks(
     end_date: str,
     chunk_days: int = 31,
     continue_on_error: bool = False,
+    adaptive: bool = True,
+    min_chunk_days: int = 1,
 ) -> list[dict]:
     results: list[dict] = []
     for from_date, to_date in _iter_date_windows(start_date, end_date, chunk_days):
@@ -517,6 +536,40 @@ def sync_vouchers_in_chunks(
                 )
             )
         except Exception as exc:
+            window_days = _window_day_count(from_date, to_date)
+            if adaptive and window_days > min_chunk_days:
+                split_windows = _split_window(from_date, to_date)
+                if split_windows is not None:
+                    left_window, right_window = split_windows
+                    results.extend(
+                        sync_vouchers_in_chunks(
+                            session,
+                            client,
+                            company_name=company_name,
+                            voucher_type=voucher_type,
+                            start_date=left_window[0],
+                            end_date=left_window[1],
+                            chunk_days=_window_day_count(left_window[0], left_window[1]),
+                            continue_on_error=continue_on_error,
+                            adaptive=adaptive,
+                            min_chunk_days=min_chunk_days,
+                        )
+                    )
+                    results.extend(
+                        sync_vouchers_in_chunks(
+                            session,
+                            client,
+                            company_name=company_name,
+                            voucher_type=voucher_type,
+                            start_date=right_window[0],
+                            end_date=right_window[1],
+                            chunk_days=_window_day_count(right_window[0], right_window[1]),
+                            continue_on_error=continue_on_error,
+                            adaptive=adaptive,
+                            min_chunk_days=min_chunk_days,
+                        )
+                    )
+                    continue
             result = {
                 "voucher_type": voucher_type,
                 "saved": 0,
@@ -540,6 +593,8 @@ def sync_vouchers_incremental(
     until_date: str | None = None,
     chunk_days: int = 31,
     continue_on_error: bool = False,
+    adaptive: bool = True,
+    min_chunk_days: int = 1,
 ) -> list[dict]:
     checkpoint = _get_checkpoint(session, entity_type=f"vouchers:{voucher_type}", company_name=company_name)
     start_date = since_date
@@ -559,7 +614,84 @@ def sync_vouchers_incremental(
         end_date=end_date,
         chunk_days=chunk_days,
         continue_on_error=continue_on_error,
+        adaptive=adaptive,
+        min_chunk_days=min_chunk_days,
     )
+
+
+def profile_vouchers(
+    session: Session,
+    client: TallyClient,
+    *,
+    company_name: str,
+    from_date: str,
+    to_date: str,
+) -> dict:
+    run = _start_run(session, "voucher_profile", company_name=company_name)
+    try:
+        payload = client.execute(
+            "voucher_profile_daybook",
+            client.build_daybook_xml(company_name, from_date=from_date, to_date=to_date),
+        )
+        _record_payload(session, run, payload, company_name=company_name)
+        line_error = client.extract_line_error(payload["response_xml"])
+        if line_error:
+            raise RuntimeError(line_error)
+
+        voucher_type_rows = [
+            {"name": row.name, "parent": row.parent, "numbering_method": row.numbering_method}
+            for row in session.scalars(select(VoucherType)).all()
+        ]
+        vouchers = parse_vouchers(payload["response_xml"])
+        by_type: dict[str, dict] = {}
+        for row in vouchers:
+            name = row["voucher_type_name"] or "unknown"
+            stats = by_type.setdefault(
+                name,
+                {
+                    "voucher_type_name": name,
+                    "base_voucher_type": resolve_voucher_base_type(name, voucher_type_rows),
+                    "count": 0,
+                    "first_date": None,
+                    "last_date": None,
+                },
+            )
+            stats["count"] += 1
+            voucher_date = row.get("voucher_date")
+            if voucher_date:
+                if stats["first_date"] is None or voucher_date < stats["first_date"]:
+                    stats["first_date"] = voucher_date
+                if stats["last_date"] is None or voucher_date > stats["last_date"]:
+                    stats["last_date"] = voucher_date
+
+        results = sorted(by_type.values(), key=lambda row: (-row["count"], row["voucher_type_name"]))
+        _finish_run(session, run, "success")
+        _upsert_checkpoint(
+            session,
+            entity_type="voucher_profile",
+            company_name=company_name,
+            status="success",
+            row_count=len(vouchers),
+            marker=to_date,
+        )
+        return {
+            "company_name": company_name,
+            "from_date": from_date,
+            "to_date": to_date,
+            "total_vouchers": len(vouchers),
+            "voucher_types": results,
+        }
+    except Exception as exc:
+        session.rollback()
+        _upsert_checkpoint(
+            session,
+            entity_type="voucher_profile",
+            company_name=company_name,
+            status="failed",
+            error_message=str(exc),
+        )
+        _finish_run(session, run, "failed", str(exc))
+        raise
 
 
 def sync_standard_vouchers(

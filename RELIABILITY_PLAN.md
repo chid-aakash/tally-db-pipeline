@@ -37,9 +37,9 @@ Status:
 - done: date-window voucher pulls
 - done: chunked voucher pulls
 - done: incremental voucher pulls from checkpoints
+- done: adaptive chunk splitting on failed windows
 
 Remaining:
-- add adaptive chunk downsizing when one date window still times out
 - add fiscal-year-aware defaults for first-time backfills
 - add first-success bootstrap flow for customers who do not know the earliest useful date
 - add safer resume semantics when one chunk fails in the middle of a larger backfill
@@ -53,7 +53,7 @@ Target outcomes:
 - detect when master-data reports are unavailable but collection probes still work
 
 Concrete work:
-- add voucher-family profiler using bounded Day Book pulls
+- done: voucher-family profiler using bounded Day Book pulls
 - add company-health summary with clear pass/fail signals
 - add profile output suitable for attaching to support requests
 
@@ -113,7 +113,7 @@ Concrete work:
 ## Current highest-value next steps
 
 1. Add adaptive chunk retry logic for voucher backfills.
-2. Add voucher-family profiling and usage discovery.
-3. Add scripted replay regression checks with expected counts.
-4. Add unknown-structure preservation for custom voucher sections.
+2. Add scripted replay regression checks with expected counts.
+3. Add unknown-structure preservation for custom voucher sections.
+4. Add fiscal-year-aware discovery and bootstrap flows.
 5. Verify the whole command set against Postgres.
