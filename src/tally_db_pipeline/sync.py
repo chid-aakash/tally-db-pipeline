@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -153,6 +154,14 @@ def _parse_iso_date(raw: str) -> datetime:
 
 def _format_iso_date(value: datetime) -> str:
     return value.strftime("%Y-%m-%d")
+
+
+def infer_company_fiscal_year_start(company_name: str) -> str | None:
+    match = re.search(r"(20\d{2})\s*-\s*(\d{2,4})$", company_name.strip())
+    if not match:
+        return None
+    start_year = int(match.group(1))
+    return f"{start_year}-04-01"
 
 
 def _next_day(raw: str) -> str:
@@ -611,8 +620,10 @@ def sync_vouchers_incremental(
     if not start_date and checkpoint and checkpoint.last_marker:
         start_date = _next_day(checkpoint.last_marker)
     if not start_date:
+        start_date = infer_company_fiscal_year_start(company_name)
+    if not start_date:
         raise ValueError(
-            f"No checkpoint exists yet for {voucher_type}. Provide since_date for the initial incremental sync."
+            f"No checkpoint exists yet for {voucher_type}, and no fiscal-year suffix could be inferred from the company name. Provide since_date for the initial incremental sync."
         )
     end_date = until_date or _format_iso_date(datetime.utcnow())
     return sync_vouchers_in_chunks(

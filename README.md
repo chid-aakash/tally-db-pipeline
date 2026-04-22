@@ -428,6 +428,8 @@ tally-db-pipeline sync-vouchers-incremental --company "Shanke Pvt Ltd - 2025-26"
 
 Once a checkpoint exists for that company and voucher family, later runs can omit `--since-date`.
 
+If no checkpoint exists yet and the company name ends with a fiscal-year suffix like `- 2025-26`, incremental sync can infer the starting date as `2025-04-01`.
+
 If the customer does not know which voucher families are actually used, profile a date range first:
 
 ```bash

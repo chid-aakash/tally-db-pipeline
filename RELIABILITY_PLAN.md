@@ -38,9 +38,9 @@ Status:
 - done: chunked voucher pulls
 - done: incremental voucher pulls from checkpoints
 - done: adaptive chunk splitting on failed windows
+- done: fiscal-year start inference from company names like `- 2025-26`
 
 Remaining:
-- add fiscal-year-aware defaults for first-time backfills
 - add first-success bootstrap flow for customers who do not know the earliest useful date
 - add safer resume semantics when one chunk fails in the middle of a larger backfill
 
