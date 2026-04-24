@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}Shift Presets{% endblock %}
+
+{% block content %}
+<style>
+  main { max-width: 1100px; }
+  .sp-section { margin-top: 18px; }
+  .sp-head {
+    display: flex; align-items: center; justify-content: space-between;
+    background: var(--navy-50); padding: 10px 14px; border-radius: 8px 8px 0 0;
+    border: 1px solid var(--line); border-bottom: none;
+  }
+  .sp-head h2 { margin: 0; color: var(--navy-900); font-size: 1.05rem; }
+  .sp-table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid var(--line); }
+  .sp-table th, .sp-table td { padding: 8px 12px; border-bottom: 1px solid var(--line); text-align: left; font-size: .9rem; vertical-align: middle; }
+  .sp-table th { background: var(--surface-2); font-weight: 600; color: var(--ink-soft); font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
+  .sp-table tr:last-child td { border-bottom: none; }
+  .sp-key { display: inline-block; padding: 2px 8px; border-radius: 999px; background: #f3f4f6; color: var(--ink-soft); font-size: .76rem; font-weight: 600; }
+  .sp-mini-btn {
+    background: transparent; border: 1px solid var(--line); color: var(--ink-soft);
+    padding: 4px 8px; font-size: .8rem; border-radius: 6px; cursor: pointer; box-shadow: none;
+    transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast);
+  }
+  .sp-mini-btn:hover { background: var(--navy-50); border-color: var(--navy-700); color: var(--navy-800); transform: none; filter: none; box-shadow: none; }
+  .sp-mini-btn.danger:hover { background: #fee2e2; border-color: #dc2626; color: #991b1b; }
+  .sp-add-form {
+    background: #f9fafb; border: 1px solid var(--line); border-top: none;
+    padding: 12px 14px; border-radius: 0 0 8px 8px;
+    display: grid; grid-template-columns: 2fr auto; gap: 10px; align-items: end;
+  }
+  .sp-add-form label { margin: 0; }
+  .sp-add-form input { padding: 6px 8px; font-size: .9rem; }
+  .sp-add-form button { padding: 7px 14px; font-size: .9rem; }
+</style>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+    <div>
+      <h1 style="margin:0">Shift Presets</h1>
+      <p class="muted" style="margin:4px 0 0">{{ company }} — hour-column slots used when a new Daily Production Report is created. Edit the label, reorder, add or delete. Existing reports keep their original slots even if presets change later.</p>
+    </div>
+    <a class="btn btn-secondary" href="/production/processes?company={{ company }}">← Back to Process Configuration</a>
+  </div>
+</div>
+
+{% for sh in shift_options %}
+{% set slots = shifts.get(sh, []) %}
+<div class="sp-section" id="sec-{{ sh }}">
+  <div class="sp-head">
+    <h2>Shift {{ sh }}</h2>
+    <div style="display:flex; gap:10px; align-items:center;">
+      <span class="muted" style="font-size:.85rem;">{{ slots|length }} slot{{ '' if slots|length == 1 else 's' }}</span>
+      <form method="post" action="/production/shift-presets/{{ sh }}/reset" style="margin:0;"
+            onsubmit="return confirm('Reset Shift {{ sh }} to the built-in defaults? Your edits are lost. Existing DPR reports are unaffected.');">
+        <input type="hidden" name="company" value="{{ company }}">
+        <button class="sp-mini-btn danger" type="submit">Reset to defaults</button>
+      </form>
+    </div>
+  </div>
+
+  {% if slots %}
+  <table class="sp-table">
+    <thead>
+      <tr>
+        <th style="width:80px;"></th>
+        <th>Label (shown on DPR)</th>
+        <th>Key</th>
+        <th style="text-align:right; width:120px;">Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for slot in slots %}
+      <tr>
+        <td>
+          <form method="post" action="/production/shift-presets/{{ sh }}/{{ slot.id }}/move" style="display:inline;">
+            <input type="hidden" name="company" value="{{ company }}">
+            <input type="hidden" name="dir" value="up">
+            <button class="sp-mini-btn" type="submit" title="Move up" {% if loop.first %}disabled{% endif %}>↑</button>
+          </form>
+          <form method="post" action="/production/shift-presets/{{ sh }}/{{ slot.id }}/move" style="display:inline;">
+            <input type="hidden" name="company" value="{{ company }}">
+            <input type="hidden" name="dir" value="down">
+            <button class="sp-mini-btn" type="submit" title="Move down" {% if loop.last %}disabled{% endif %}>↓</button>
+          </form>
+        </td>
+        <td>
+          <form method="post" action="/production/shift-presets/{{ sh }}/{{ slot.id }}/edit" style="display:flex; gap:6px; align-items:center; margin:0;">
+            <input type="hidden" name="company" value="{{ company }}">
+            <input type="text" name="label" value="{{ slot.label }}" required style="padding:4px 8px; font-size:.88rem; max-width:160px;">
+            <button class="sp-mini-btn" type="submit">Save</button>
+          </form>
+        </td>
+        <td><span class="sp-key">{{ slot.key }}</span></td>
+        <td style="text-align:right;">
+          <form method="post" action="/production/shift-presets/{{ sh }}/{{ slot.id }}/delete" style="display:inline;"
+                onsubmit="return confirm('Delete slot &quot;{{ slot.label }}&quot;?');">
+            <input type="hidden" name="company" value="{{ company }}">
+            <button class="sp-mini-btn danger" type="submit">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  <form method="post" action="/production/shift-presets/{{ sh }}/add" class="sp-add-form">
+    <input type="hidden" name="company" value="{{ company }}">
+    <label>New slot label
+      <input type="text" name="label" placeholder="e.g. 8 or OT" required>
+    </label>
+    <button type="submit">+ Add slot</button>
+  </form>
+</div>
+{% endfor %}
+{% endblock %}

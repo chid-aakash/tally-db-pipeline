@@ -1,0 +1,178 @@
+{% extends "base.html" %}
+{% block title %}Process Catalog{% endblock %}
+
+{% block content %}
+<style>
+  main { max-width: 1100px; }
+  .cat-section { margin-top: 18px; }
+  .cat-section-head {
+    display: flex; align-items: center; justify-content: space-between;
+    background: var(--navy-50); padding: 10px 14px; border-radius: 8px 8px 0 0;
+    border: 1px solid var(--line); border-bottom: none;
+  }
+  .cat-section-head h2 { margin: 0; color: var(--navy-900); font-size: 1.05rem; }
+  .cat-table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid var(--line); }
+  .cat-table th, .cat-table td { padding: 8px 12px; border-bottom: 1px solid var(--line); text-align: left; font-size: .9rem; vertical-align: middle; }
+  .cat-table th { background: var(--surface-2); font-weight: 600; color: var(--ink-soft); font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
+  .cat-table tr:last-child td { border-bottom: none; }
+  .cat-stage {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    background: #eef2ff; color: var(--navy-800); font-size: .76rem; font-weight: 600;
+  }
+  .cat-empty { padding: 14px; text-align: center; color: var(--muted); background: #fff; border: 1px dashed var(--line); border-top: none; }
+  .cat-add-form {
+    background: #f9fafb; border: 1px solid var(--line); border-top: none;
+    padding: 12px 14px; border-radius: 0 0 8px 8px;
+    display: grid; grid-template-columns: 2fr 1fr 1fr auto; gap: 10px; align-items: end;
+  }
+  .cat-add-form label { margin: 0; }
+  .cat-add-form input, .cat-add-form select { padding: 6px 8px; font-size: .9rem; }
+  .cat-add-form button { padding: 7px 14px; font-size: .9rem; }
+  .cat-mini-btn {
+    background: transparent; border: 1px solid var(--line); color: var(--ink-soft);
+    padding: 4px 8px; font-size: .8rem; border-radius: 6px; cursor: pointer; box-shadow: none;
+    transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast);
+  }
+  .cat-mini-btn:hover { background: var(--navy-50); border-color: var(--navy-700); color: var(--navy-800); transform: none; filter: none; box-shadow: none; }
+  .cat-mini-btn.danger:hover { background: #fee2e2; border-color: #dc2626; color: #991b1b; }
+  @media (max-width: 720px) { .cat-add-form { grid-template-columns: 1fr 1fr; } }
+</style>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+    <div>
+      <h1 style="margin:0">Process Catalog</h1>
+      <p class="muted" style="margin:4px 0 0">{{ company }} — reusable label / stage / group combos.</p>
+    </div>
+    <div style="display:flex; gap:10px; align-items:center;">
+      <form method="post" action="/production/process-catalog/seed" style="margin:0;">
+        <input type="hidden" name="company" value="{{ company }}">
+        <button class="btn btn-secondary" type="submit"
+                onclick="return confirm('Add the Line 4 paper-form defaults (5 production + 18 rejection + 5 rework) to the catalog? Existing entries are kept.');">
+          Seed Line Processes Defaults
+        </button>
+      </form>
+      <a class="btn btn-secondary" href="/production/processes?company={{ company }}">← Back</a>
+    </div>
+  </div>
+</div>
+
+<div class="cat-section" id="sec-stages">
+  <div class="cat-section-head">
+    <h2>Stages</h2>
+    <span class="muted" style="font-size:.85rem;">{{ stages|length }} stage{{ '' if stages|length == 1 else 's' }}</span>
+  </div>
+  {% if stages %}
+  <table class="cat-table">
+    <thead>
+      <tr>
+        <th>Label</th>
+        <th>Key</th>
+        <th>In use</th>
+        <th style="text-align:right; width:240px;">Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in stages %}
+      <tr {% if not s.active %}style="background:#fafafa; color:var(--muted);"{% endif %}>
+        <td>
+          <form method="post" action="/production/process-catalog/stage/{{ s.id }}/edit" style="display:flex; gap:6px; align-items:center; margin:0;">
+            <input type="hidden" name="company" value="{{ company }}">
+            <input type="text" name="label" value="{{ s.label }}" required style="padding:4px 8px; font-size:.88rem; max-width:240px;">
+            <button class="cat-mini-btn" type="submit">Save</button>
+          </form>
+        </td>
+        <td><span class="cat-stage" style="background:#f3f4f6; color:var(--ink-soft);">{{ s.key }}</span></td>
+        <td>{{ stage_usage.get(s.key, 0) }} row{{ '' if stage_usage.get(s.key, 0) == 1 else 's' }}</td>
+        <td style="text-align:right;">
+          {% if s.active %}
+          <form method="post" action="/production/process-catalog/stage/{{ s.id }}/delete" style="display:inline;"
+                onsubmit="return confirm('Hide stage &quot;{{ s.label }}&quot; from new pickers? Existing references keep their label. Reactivate any time.');">
+            <input type="hidden" name="company" value="{{ company }}">
+            <button class="cat-mini-btn danger" type="submit">Deactivate</button>
+          </form>
+          {% else %}
+          <form method="post" action="/production/process-catalog/stage/{{ s.id }}/reactivate" style="display:inline;">
+            <input type="hidden" name="company" value="{{ company }}">
+            <button class="cat-mini-btn" type="submit">Reactivate</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  <form method="post" action="/production/process-catalog/stage/add" class="cat-add-form" style="grid-template-columns: 2fr auto;">
+    <input type="hidden" name="company" value="{{ company }}">
+    <label>New stage label
+      <input type="text" name="label" placeholder="e.g. Quality Check" required>
+    </label>
+    <button type="submit">+ Add stage</button>
+  </form>
+  <p class="muted" style="margin:6px 14px 0; font-size:.78rem;">
+    The internal key is auto-generated from the label (e.g. "Quality Check" → <code>quality_check</code>) and never changes.
+    Renaming a stage updates display only — historical rows keep resolving.
+  </p>
+</div>
+
+{% for sec, sec_label in section_options %}
+{% set rows = sections.get(sec, []) %}
+<div class="cat-section" id="sec-{{ sec }}">
+  <div class="cat-section-head">
+    <h2>{{ sec_label }}</h2>
+    <span class="muted" style="font-size:.85rem;">{{ rows|length }} entr{{ 'y' if rows|length == 1 else 'ies' }}</span>
+  </div>
+
+  {% if rows %}
+  <table class="cat-table">
+    <thead>
+      <tr>
+        <th>Label</th>
+        <th>Stage</th>
+        {% if sec == 'rejection' %}<th>Group</th>{% endif %}
+        <th style="text-align:right; width:120px;">Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td>{{ row.label }}</td>
+        <td><span class="cat-stage">{{ stage_labels.get(row.stage, row.stage) }}</span></td>
+        {% if sec == 'rejection' %}<td>{{ row.group_label or '' }}</td>{% endif %}
+        <td style="text-align:right;">
+          <form method="post" action="/production/process-catalog/{{ row.id }}/delete" style="display:inline;"
+                onsubmit="return confirm('Delete catalog entry &quot;{{ row.label }}&quot;? Lines that already use it are unaffected.');">
+            <input type="hidden" name="company" value="{{ company }}">
+            <button class="cat-mini-btn danger" type="submit">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="cat-empty">No entries yet. Add one below.</div>
+  {% endif %}
+
+  <form method="post" action="/production/process-catalog/add" class="cat-add-form">
+    <input type="hidden" name="company" value="{{ company }}">
+    <input type="hidden" name="section" value="{{ sec }}">
+    <label>Label <input type="text" name="label" placeholder="e.g. Workcenter Output" required></label>
+    <label>Stage
+      <select name="stage" required>
+        {% for sk, sl in stage_options %}<option value="{{ sk }}">{{ sl }}</option>{% endfor %}
+      </select>
+    </label>
+    {% if sec == 'rejection' %}
+    <label>Group <input type="text" name="group_label" placeholder="e.g. Drilling"></label>
+    {% else %}
+    <input type="hidden" name="group_label" value="">
+    <span></span>
+    {% endif %}
+    <button type="submit">+ Add</button>
+  </form>
+</div>
+{% endfor %}
+{% endblock %}

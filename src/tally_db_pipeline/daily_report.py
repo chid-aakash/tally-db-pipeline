@@ -154,6 +154,71 @@ SHIFT_OPTIONS: list[str] = ["S1", "S2", "S3"]
 LINE_OPTIONS: list[str] = ["1", "2", "3", "4"]
 
 
+# ---- Stage taxonomy --------------------------------------------------------
+# Workstation tags used to roll up production across lines whose row labels
+# differ. Order here is the rendering order in dropdowns. Renaming a stage is
+# a code change *plus* a data migration — these slugs land in DB rows.
+STAGES: list[tuple[str, str]] = [
+    ("cnc_cutting",  "CNC Cutting"),
+    ("single_edger", "Single Edger"),
+    ("auto_corner",  "Auto Corner"),
+    ("work_center",  "Work Center"),
+    ("drilling",     "Drilling"),
+    ("washing",      "Washing"),
+    ("rework",       "Rework"),
+    ("printing",     "Printing"),
+]
+STAGE_LABELS: dict[str, str] = dict(STAGES)
+SECTION_OPTIONS: list[tuple[str, str]] = [
+    ("production", "Production (Hourly Output)"),
+    ("rejection",  "Rejection"),
+    ("rework",     "Rework"),
+]
+
+
+# Default seed sets matching the Line 4 paper form. Used by the config page's
+# "seed defaults" action when a line+section is empty. Each tuple is
+# (label, stage, group_label).
+DEFAULT_SEEDS: dict[str, list[tuple[str, str, str | None]]] = {
+    "production": [
+        ("Single Edger Input",     "single_edger", None),
+        ("Single Edger Output",    "single_edger", None),
+        ("Auto Corner Output",     "auto_corner",  None),
+        ("Drilling Output",        "drilling",     None),
+        ("Washing (Incl Rework)",  "washing",      None),
+    ],
+    "rejection": [
+        ("Chip off / Breakage",   "single_edger", "Single Edger"),
+        ("Over Grinding",         "single_edger", "Single Edger"),
+        ("CNC Defects",           "single_edger", "Single Edger"),
+        ("Chip off / Breakage",   "auto_corner",  "Auto Corner"),
+        ("Over Grinding",         "auto_corner",  "Auto Corner"),
+        ("Burner Hole Breakage",  "drilling",     "Drilling"),
+        ("Burner Hole Chip off",  "drilling",     "Drilling"),
+        ("Burner Hole Offset",    "drilling",     "Drilling"),
+        ("Knob Hole Breakage",    "drilling",     "Drilling"),
+        ("Knob Hole Chip off",    "drilling",     "Drilling"),
+        ("Knob Hole Offset",      "drilling",     "Drilling"),
+        ("Leg Hole Breakage",     "drilling",     "Drilling"),
+        ("Leg Hole Chip off",     "drilling",     "Drilling"),
+        ("Leg Hole Offset",       "drilling",     "Drilling"),
+        ("Handling Damage",       "drilling",     "Drilling"),
+        ("Deep Scratch",          "washing",      "Washing"),
+        ("RG Bubbles",            "washing",      "Washing"),
+        ("Others",                "washing",      "Washing"),
+    ],
+    # Rework rows tagged by the stage where the original defect originated, so
+    # cross-line rework analyses can correlate "rework load by source stage".
+    "rework": [
+        ("Single Side Scratch",   "washing",      None),
+        ("Double Side Scratch",   "washing",      None),
+        ("Hole Chip off",         "drilling",     None),
+        ("Edge Chip off",         "single_edger", None),
+        ("Auto Corner Radius",    "auto_corner",  None),
+    ],
+}
+
+
 def rejection_rows_grouped() -> list[tuple[str, list[Row]]]:
     """Preserve the on-form grouping order so the template renders process
     headings exactly like the paper (Single Edger → Auto Corner → Drilling → Washing)."""

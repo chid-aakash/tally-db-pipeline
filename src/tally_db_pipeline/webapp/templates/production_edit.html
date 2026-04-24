@@ -78,6 +78,14 @@
   .dpr-actions .ghost { background: var(--surface-2); color: var(--navy-900); border: 1px solid var(--line); }
 </style>
 
+{% if config_empty %}
+<div class="card" style="background:#fff7db; border-color:var(--orange-500);">
+  <strong>No process rows configured for Line {{ report.line }}.</strong>
+  <span class="muted">Open
+    <a href="/production/processes/{{ report.line }}?company={{ report.company_name }}">Process Configuration</a>
+    and add rows from the catalog before this report can be filled in.</span>
+</div>
+{% endif %}
 <form method="post" action="/production/daily-report/{{ report.id }}/save" id="dpr-form">
   {# --- Sticky meta bar + live KPIs --- #}
   <div class="dpr-meta">
