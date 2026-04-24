@@ -15,7 +15,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from pathlib import Path
 
-from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi import FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -24,13 +24,18 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
-from ..db import get_session
+from ..db import engine, get_session
 from ..models import (
+    Base,
     Company,
+    ConsumptionReportSelection,
     ProductionEntry,
     ProductionEntryLine,
     SJPolicy,
+    StockGroup,
     StockItem,
+    Voucher,
+    VoucherInventoryEntry,
 )
 from ..policy import (
     default_godown_for_role,
@@ -96,6 +101,19 @@ templates.env.filters["inr"] = _inr
 templates.env.filters["nice_date"] = _nice_date
 
 app = FastAPI(title="Tally Production Entry")
+
+# Ensure newly introduced tables exist (idempotent). Sync also does this, but the
+# webapp may be started before a full sync on a fresh machine.
+Base.metadata.create_all(bind=engine)
+
+
+CONSUMPTION_DEFAULT_VOUCHER_TYPES = [
+    "Stock Journal",
+    "Delivery Note",
+    "Rejections Out",
+    "Physical Stock",
+    "Material Out",
+]
 
 
 def _session() -> Session:
@@ -1073,4 +1091,641 @@ def print_summary(request: Request, summary_date: str, company: str | None = Non
             "logo_right": "/static/logos/sepl.png",
             "generated_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
         },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Daily stock consumption pivot
+# ---------------------------------------------------------------------------
+
+def _get_selection(session: Session, company: str) -> dict[str, set[str]]:
+    rows = session.scalars(
+        select(ConsumptionReportSelection).where(
+            ConsumptionReportSelection.company_name == company
+        )
+    )
+    sel: dict[str, set[str]] = {"group": set(), "item": set(), "vtype": set()}
+    for r in rows:
+        sel.setdefault(r.kind, set()).add(r.name)
+    return sel
+
+
+def _resolve_items_for_selection(
+    session: Session, company: str, sel: dict[str, set[str]]
+) -> list[StockItem]:
+    """Expand selected groups (+ descendants) to concrete items and union with explicit items."""
+    if not sel["group"] and not sel["item"]:
+        return []
+
+    # Walk group descendants
+    all_sg = list(session.scalars(select(StockGroup).where(StockGroup.company_name == company)))
+    children_of: dict[str, list[str]] = {}
+    for sg in all_sg:
+        if sg.parent and sg.parent != sg.name:
+            children_of.setdefault(sg.parent, []).append(sg.name)
+    expanded_groups: set[str] = set()
+    stack = list(sel["group"])
+    while stack:
+        g = stack.pop()
+        if g in expanded_groups:
+            continue
+        expanded_groups.add(g)
+        stack.extend(children_of.get(g, []))
+
+    stmt = select(StockItem).where(StockItem.company_name == company)
+    items = list(session.scalars(stmt.order_by(StockItem.name)))
+    chosen: list[StockItem] = []
+    for it in items:
+        if it.name in sel["item"] or (it.parent and it.parent in expanded_groups):
+            chosen.append(it)
+    return chosen
+
+
+def _daterange(start: str, end: str) -> list[str]:
+    from datetime import date as _d, timedelta
+    s = datetime.strptime(start, "%Y-%m-%d").date()
+    e = datetime.strptime(end, "%Y-%m-%d").date()
+    if e < s:
+        s, e = e, s
+    out = []
+    cur = s
+    while cur <= e:
+        out.append(cur.isoformat())
+        cur += timedelta(days=1)
+    return out
+
+
+def _build_consumption_pivot(
+    session: Session,
+    company: str,
+    start: str,
+    end: str,
+    voucher_types: list[str],
+    items: list[StockItem],
+) -> dict:
+    dates = _daterange(start, end)
+    # dd-mm label + short weekday + Sunday flag for table headers.
+    _wd = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    date_headers = []
+    for d in dates:
+        dt = datetime.strptime(d, "%Y-%m-%d").date()
+        date_headers.append({
+            "iso": d,
+            "label": dt.strftime("%d-%m"),
+            "weekday": _wd[dt.weekday()],
+            "is_sunday": dt.weekday() == 6,
+        })
+    item_names = [it.name for it in items]
+    # name -> {date -> qty, uom, parent, total}
+    by_item: dict[str, dict] = {
+        it.name: {
+            "name": it.name,
+            "uom": it.closing_uom or it.base_units or "",
+            "parent": it.parent or "",
+            "by_date": {d: 0.0 for d in dates},
+            "total": 0.0,
+        }
+        for it in items
+    }
+    if not item_names or not voucher_types:
+        return {
+            "dates": dates,
+            "date_headers": date_headers,
+            "by_item": by_item,
+            "rows": _tree_rows(session, company, by_item, dates),
+            "column_totals": {d: 0.0 for d in dates},
+            "grand_total": 0.0,
+        }
+
+    q = (
+        select(Voucher.voucher_date, VoucherInventoryEntry.item_name, VoucherInventoryEntry.quantity)
+        .join(VoucherInventoryEntry, VoucherInventoryEntry.voucher_id == Voucher.id)
+        .where(
+            Voucher.company_name == company,
+            Voucher.is_cancelled == False,  # noqa: E712
+            Voucher.voucher_type_name.in_(voucher_types),
+            Voucher.voucher_date >= start,
+            Voucher.voucher_date <= end,
+            VoucherInventoryEntry.item_name.in_(item_names),
+        )
+    )
+    column_totals = {d: 0.0 for d in dates}
+    grand_total = 0.0
+    for vdate, item_name, qty in session.execute(q):
+        if not vdate or vdate not in column_totals:
+            continue
+        row = by_item.get(item_name)
+        if row is None:
+            continue
+        # Consumption is the outward flow; Tally stores consume as negative qty
+        # in Stock Journal (DEEMEDPOSITIVE="No"). Display absolute quantity.
+        amt = abs(float(qty or 0))
+        row["by_date"][vdate] = row["by_date"].get(vdate, 0.0) + amt
+        row["total"] += amt
+        column_totals[vdate] += amt
+        grand_total += amt
+
+    tree_rows = _tree_rows(session, company, by_item, dates)
+    return {
+        "dates": dates,
+        "date_headers": date_headers,
+        "by_item": by_item,
+        "rows": tree_rows,
+        "column_totals": column_totals,
+        "grand_total": grand_total,
+    }
+
+
+def _tree_rows(
+    session: Session,
+    company: str,
+    by_item: dict[str, dict],
+    dates: list[str],
+) -> list[dict]:
+    """Render the selection as a hierarchical, depth-ordered row list.
+
+    Walks StockGroup parent → child relationships for the company, so the
+    table mirrors the Tally stock-group tree (root → sub-groups → items),
+    not a flat alphabetical bucket. Each group row aggregates subtotals over
+    *all* descendant items, not just its direct children. Groups with no
+    selected descendants are omitted. Items whose parent is not a known
+    stock group fall under a synthetic `(ungrouped)` node."""
+    all_sg = list(session.scalars(select(StockGroup).where(StockGroup.company_name == company))) if company else []
+    group_names = {sg.name for sg in all_sg}
+    children_of: dict[str, list[str]] = {}
+    for sg in all_sg:
+        if sg.parent and sg.parent in group_names and sg.parent != sg.name:
+            children_of.setdefault(sg.parent, []).append(sg.name)
+    roots = sorted(
+        sg.name for sg in all_sg
+        if not sg.parent or sg.parent not in group_names or sg.parent == sg.name
+    )
+
+    items_by_group: dict[str, list[dict]] = {}
+    for row in by_item.values():
+        key = row["parent"] if (row["parent"] and row["parent"] in group_names) else "(ungrouped)"
+        items_by_group.setdefault(key, []).append(row)
+
+    def descendants_have_items(g: str) -> bool:
+        if items_by_group.get(g):
+            return True
+        return any(descendants_have_items(c) for c in children_of.get(g, []))
+
+    def accumulate(g: str, bucket: dict[str, float]) -> float:
+        total = 0.0
+        for r in items_by_group.get(g, []):
+            for d, q in r["by_date"].items():
+                bucket[d] = bucket.get(d, 0.0) + q
+            total += r["total"]
+        for c in children_of.get(g, []):
+            total += accumulate(c, bucket)
+        return total
+
+    out: list[dict] = []
+    counter = [0]
+
+    def walk(name: str, depth: int, ancestor_ids: list[str]) -> None:
+        if not descendants_have_items(name):
+            return
+        counter[0] += 1
+        gid = f"g{counter[0]}"
+        subtotal_by_date: dict[str, float] = {d: 0.0 for d in dates}
+        subtotal = accumulate(name, subtotal_by_date)
+        out.append({
+            "kind": "group",
+            "id": gid,
+            "name": name,
+            "depth": depth,
+            "ancestors": list(ancestor_ids),
+            "subtotal_by_date": subtotal_by_date,
+            "subtotal": subtotal,
+        })
+        new_ancestors = ancestor_ids + [gid]
+        for it in sorted(items_by_group.get(name, []), key=lambda r: r["name"]):
+            counter[0] += 1
+            out.append({
+                "kind": "item",
+                "id": f"i{counter[0]}",
+                "name": it["name"],
+                "uom": it["uom"],
+                "depth": depth + 1,
+                "ancestors": new_ancestors,
+                "by_date": it["by_date"],
+                "total": it["total"],
+            })
+        for c in sorted(children_of.get(name, [])):
+            walk(c, depth + 1, new_ancestors)
+
+    for r in roots:
+        walk(r, 0, [])
+    if items_by_group.get("(ungrouped)"):
+        walk("(ungrouped)", 0, [])
+    return out
+
+
+def _parse_csv(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    return [x.strip() for x in raw.split(",") if x.strip()]
+
+
+@app.get("/consumption", response_class=HTMLResponse)
+def consumption_report(
+    request: Request,
+    company: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    voucher_types: list[str] | None = Query(None),
+    configure: int = 0,
+):
+    from datetime import date as _d
+    with _session() as session:
+        companies = sorted(
+            c for c in session.scalars(select(Voucher.company_name).distinct()) if c
+        )
+        # Fall back to all companies if none have vouchers yet
+        if not companies:
+            companies = _list_companies(session)
+        company = company or (companies[0] if companies else "")
+
+        today = _d.today()
+        if not start:
+            start = today.replace(day=1).isoformat()
+        if not end:
+            end = today.isoformat()
+
+        # Voucher-type universe for this company, grouped by Tally base type.
+        # We only keep (base, voucher_type_name) pairs that actually carry
+        # inventory entries — strips Payment / Receipt / Journal / Contra / etc.
+        base_alias_rows: list[tuple[str | None, str]] = []
+        if company:
+            base_alias_rows = list(session.execute(
+                select(Voucher.base_voucher_type, Voucher.voucher_type_name)
+                .join(VoucherInventoryEntry, VoucherInventoryEntry.voucher_id == Voucher.id)
+                .where(Voucher.company_name == company)
+                .distinct()
+            ).all())
+
+        def _canonical_base(base: str | None, name: str | None) -> str:
+            """Re-classify user-defined voucher types that didn't resolve to a
+            Tally default. Some companies create types like 'SJ - DRILL' whose
+            stored base is the same user-defined name (because the parent chain
+            wasn't fully synced); we still want them listed under 'Stock Journal'."""
+            b = (base or "").strip()
+            n = (name or "").strip()
+            if b in CONSUMPTION_DEFAULT_VOUCHER_TYPES:
+                return b
+            nl = n.lower()
+            bl = b.lower()
+            # Stock Journal family
+            if (
+                nl.startswith("sj ") or nl.startswith("sj-") or nl.startswith("sj ")
+                or nl.startswith("sj_") or "stock journal" in nl
+                or "manufacturing journal" in nl
+                or bl.startswith("sj") or "stock journal" in bl
+            ):
+                return "Stock Journal"
+            if "delivery note" in nl or nl.startswith("dn ") or nl.startswith("dn-") or "delivery note" in bl:
+                return "Delivery Note"
+            if "physical stock" in nl or "physical stock" in bl:
+                return "Physical Stock"
+            if "rejections out" in nl or "rejections out" in bl:
+                return "Rejections Out"
+            if "material out" in nl or "material out" in bl:
+                return "Material Out"
+            return b or "(unclassified)"
+
+        aliases_by_base: dict[str, list[str]] = {}
+        for base, name in base_alias_rows:
+            if not name:
+                continue
+            key = _canonical_base(base, name)
+            aliases_by_base.setdefault(key, []).append(name)
+        for k in aliases_by_base:
+            aliases_by_base[k] = sorted(set(aliases_by_base[k]))
+
+        # Order bases: Tally defaults first (in preferred order), then any others.
+        base_groups: list[dict] = []
+        seen_bases: set[str] = set()
+        for base in CONSUMPTION_DEFAULT_VOUCHER_TYPES:
+            if base in aliases_by_base:
+                base_groups.append({
+                    "base": base,
+                    "aliases": aliases_by_base[base],
+                    "is_tally_default": True,
+                })
+                seen_bases.add(base)
+        for base in sorted(aliases_by_base.keys()):
+            if base in seen_bases:
+                continue
+            base_groups.append({
+                "base": base,
+                "aliases": aliases_by_base[base],
+                "is_tally_default": False,
+            })
+
+        all_voucher_types = sorted({a for group in base_groups for a in group["aliases"]})
+
+        sel = _get_selection(session, company) if company else {"group": set(), "item": set(), "vtype": set()}
+
+        if voucher_types is not None:
+            # URL override (e.g. shareable link) wins.
+            vtypes = [vt for vt in voucher_types if vt]
+        elif sel["vtype"]:
+            # Persisted selection from the Configure Items screen.
+            vtypes = [vt for vt in sorted(sel["vtype"]) if vt in all_voucher_types]
+        else:
+            # First-ever load for this company: auto-tick every alias whose base
+            # is a Tally default outward-stock voucher type.
+            vtypes = [
+                a for group in base_groups
+                if group["is_tally_default"]
+                for a in group["aliases"]
+            ]
+            if not vtypes:
+                vtypes = list(all_voucher_types)
+
+        # Data for configure panel: full stock group tree + direct items
+        groups_tree: list[dict] = []
+        direct_items: dict[str, list[str]] = {}
+        expanded_groups: set[str] = set()
+        if configure and company:
+            all_sg = list(session.scalars(select(StockGroup).where(StockGroup.company_name == company)))
+            group_names = {sg.name for sg in all_sg}
+            children_of: dict[str, list[str]] = {}
+            parent_of: dict[str, str] = {}
+            for sg in all_sg:
+                if sg.parent and sg.parent != sg.name:
+                    children_of.setdefault(sg.parent, []).append(sg.name)
+                    parent_of[sg.name] = sg.parent
+            roots = sorted(sg.name for sg in all_sg if not sg.parent or sg.parent not in group_names)
+            for it in session.scalars(
+                select(StockItem).where(StockItem.company_name == company).order_by(StockItem.name)
+            ):
+                if it.parent:
+                    direct_items.setdefault(it.parent, []).append(it.name)
+
+            def build(n: str) -> dict:
+                return {
+                    "name": n,
+                    "children": [build(c) for c in sorted(children_of.get(n, []))],
+                    "items": direct_items.get(n, []),
+                }
+            groups_tree = [build(r) for r in roots]
+            # Tree starts fully collapsed — keeps the Configure Items screen
+            # compact. Users can use Expand all / Collapse all or click rows.
+
+        items = _resolve_items_for_selection(session, company, sel) if company else []
+        pivot = _build_consumption_pivot(session, company, start, end, vtypes, items)
+
+    return templates.TemplateResponse(
+        request,
+        "consumption.html",
+        {
+            "companies": companies,
+            "selected_company": company,
+            "start": start,
+            "end": end,
+            "voucher_types": vtypes,
+            "voucher_types_csv": ",".join(vtypes),
+            "all_voucher_types": all_voucher_types,
+            "base_groups": base_groups,
+            "selected_vtypes_set": set(vtypes),
+            "pivot": pivot,
+            "configure": bool(configure),
+            "groups_tree": groups_tree,
+            "selected_groups": sorted(sel["group"]),
+            "selected_items": sorted(sel["item"]),
+            "expanded_groups": expanded_groups,
+            "selection_count": len(sel["group"]) + len(sel["item"]),
+        },
+    )
+
+
+@app.post("/consumption/selection")
+async def save_consumption_selection(request: Request):
+    from urllib.parse import urlencode
+    form = await request.form()
+    company = (form.get("company") or "").strip()
+    if not company:
+        raise HTTPException(400, "company required")
+    selected_groups = [v for v in form.getlist("group") if v]
+    selected_items = [v for v in form.getlist("item") if v]
+    selected_vtypes = [v for v in form.getlist("voucher_types") if v]
+    with _session() as session:
+        # Replace selection for this company
+        for row in session.scalars(
+            select(ConsumptionReportSelection).where(
+                ConsumptionReportSelection.company_name == company
+            )
+        ):
+            session.delete(row)
+        session.flush()
+        for g in selected_groups:
+            session.add(ConsumptionReportSelection(company_name=company, kind="group", name=g))
+        for it in selected_items:
+            session.add(ConsumptionReportSelection(company_name=company, kind="item", name=it))
+        for vt in selected_vtypes:
+            session.add(ConsumptionReportSelection(company_name=company, kind="vtype", name=vt))
+        session.commit()
+    # Redirect back to the main (non-configure) screen so the user sees the
+    # report with the new selection applied.
+    params: dict[str, str] = {"company": company}
+    for k in ("start", "end"):
+        v = form.get(k)
+        if v:
+            params[k] = v
+    return RedirectResponse(f"/consumption?{urlencode(params)}", status_code=303)
+
+
+@app.get("/consumption/export.xlsx")
+def consumption_export_xlsx(
+    company: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+):
+    """Excel export of the daily stock-consumption pivot.
+
+    Formula-enabled: per-item row totals and per-date column totals are live
+    SUM() formulas, and group subtotal rows sum their descendant item cells —
+    so edits in Excel recalculate automatically. Uses the same selection +
+    voucher-type config persisted for the company.
+    """
+    import io
+    from datetime import date as _d
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
+    from openpyxl.utils import get_column_letter
+    from fastapi.responses import Response
+
+    with _session() as session:
+        if not company:
+            companies = sorted(
+                c for c in session.scalars(select(Voucher.company_name).distinct()) if c
+            )
+            company = companies[0] if companies else ""
+        today = _d.today()
+        start = start or today.replace(day=1).isoformat()
+        end = end or today.isoformat()
+        sel = _get_selection(session, company) if company else {"group": set(), "item": set(), "vtype": set()}
+        vtypes = sorted(sel["vtype"]) if sel["vtype"] else []
+        items = _resolve_items_for_selection(session, company, sel) if company else []
+        pivot = _build_consumption_pivot(session, company, start, end, vtypes, items)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Consumption"
+
+    headers = pivot["date_headers"]
+    n_dates = len(headers)
+    first_date_col = 3  # A=Item, B=UOM, C..=dates, last=Total
+    last_date_col = first_date_col + n_dates - 1
+    total_col = last_date_col + 1
+
+    navy = PatternFill("solid", fgColor="E8EEF9")
+    group_fill = PatternFill("solid", fgColor="FCE7C4")
+    sunday_fill = PatternFill("solid", fgColor="FFF7ED")
+    bold = Font(bold=True)
+    thin = Side(style="thin", color="D5DBE5")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    center = Alignment(horizontal="center")
+    right = Alignment(horizontal="right")
+
+    ws.cell(row=1, column=1, value=f"Daily Stock Consumption — {company}").font = Font(bold=True, size=13)
+    ws.cell(row=2, column=1, value=f"{start} to {end}").font = Font(italic=True, color="666666")
+
+    hdr_row1 = 4
+    hdr_row2 = 5
+    ws.cell(row=hdr_row1, column=1, value="Item name").font = bold
+    ws.cell(row=hdr_row2, column=1, value="").font = bold
+    ws.merge_cells(start_row=hdr_row1, start_column=1, end_row=hdr_row2, end_column=1)
+    ws.cell(row=hdr_row1, column=2, value="UOM").font = bold
+    ws.merge_cells(start_row=hdr_row1, start_column=2, end_row=hdr_row2, end_column=2)
+    for i, h in enumerate(headers):
+        c1 = ws.cell(row=hdr_row1, column=first_date_col + i, value=h["weekday"])
+        c2 = ws.cell(row=hdr_row2, column=first_date_col + i, value=h["label"])
+        for c in (c1, c2):
+            c.font = bold
+            c.alignment = center
+            c.fill = sunday_fill if h["is_sunday"] else navy
+    ws.cell(row=hdr_row1, column=total_col, value="Total").font = bold
+    ws.merge_cells(start_row=hdr_row1, start_column=total_col, end_row=hdr_row2, end_column=total_col)
+
+    # Emit data rows. Track per-group the row range of its *direct* item rows;
+    # group subtotals use SUMIF-style formulas that sum over the direct-descendant
+    # item rows in each date column, so editing an item cell updates the group row.
+    r = hdr_row2 + 1
+    group_item_rows: dict[str, list[int]] = {}  # group_id -> list of item excel row numbers under it (incl descendants)
+    group_row_num: dict[str, int] = {}
+
+    for row in pivot["rows"]:
+        if row["kind"] == "group":
+            group_row_num[row["id"]] = r
+            indent = "    " * row["depth"]
+            cell = ws.cell(row=r, column=1, value=f"{indent}📁 {row['name']}")
+            cell.font = bold
+            ws.cell(row=r, column=2, value="—").alignment = center
+            for i, h in enumerate(headers):
+                c = ws.cell(row=r, column=first_date_col + i)
+                c.font = bold
+                c.alignment = right
+                if h["is_sunday"]:
+                    c.fill = sunday_fill
+                else:
+                    c.fill = group_fill
+            ws.cell(row=r, column=total_col).font = bold
+            # Fill color for item-less cells (still mark the row)
+            ws.cell(row=r, column=1).fill = group_fill
+            ws.cell(row=r, column=2).fill = group_fill
+            ws.cell(row=r, column=total_col).fill = group_fill
+            r += 1
+        else:
+            indent = "    " * row["depth"]
+            ws.cell(row=r, column=1, value=f"{indent}{row['name']}")
+            ws.cell(row=r, column=2, value=row["uom"] or "")
+            for i, h in enumerate(headers):
+                v = row["by_date"].get(h["iso"], 0)
+                cell = ws.cell(row=r, column=first_date_col + i, value=(round(v, 4) if v else None))
+                cell.number_format = "#,##0.00;-#,##0.00;—"
+                cell.alignment = right
+                if h["is_sunday"]:
+                    cell.fill = sunday_fill
+            # Row total as a live SUM formula across date columns
+            first_letter = get_column_letter(first_date_col)
+            last_letter = get_column_letter(last_date_col)
+            tot = ws.cell(row=r, column=total_col, value=f"=SUM({first_letter}{r}:{last_letter}{r})")
+            tot.number_format = "#,##0.00;-#,##0.00;—"
+            tot.alignment = right
+            tot.font = bold
+            for gid in row["ancestors"]:
+                group_item_rows.setdefault(gid, []).append(r)
+            r += 1
+
+    # Fill in group subtotal formulas now that we know which item rows belong to each group.
+    for gid, grow in group_row_num.items():
+        item_rows = group_item_rows.get(gid, [])
+        for i in range(n_dates):
+            col = first_date_col + i
+            col_letter = get_column_letter(col)
+            if item_rows:
+                # Build refs like C7,C8,C12 — explicit non-contiguous cell list
+                refs = ",".join(f"{col_letter}{ir}" for ir in item_rows)
+                ws.cell(row=grow, column=col, value=f"=SUM({refs})")
+            else:
+                ws.cell(row=grow, column=col, value=0)
+            ws.cell(row=grow, column=col).number_format = "#,##0.00;-#,##0.00;—"
+        # Group row total = SUM of its date cells on the same row
+        first_letter = get_column_letter(first_date_col)
+        last_letter = get_column_letter(last_date_col)
+        tc = ws.cell(row=grow, column=total_col, value=f"=SUM({first_letter}{grow}:{last_letter}{grow})")
+        tc.number_format = "#,##0.00;-#,##0.00;—"
+
+    # Column totals row — live SUM over every row in each date column (groups are
+    # omitted to avoid double counting; we sum only item rows).
+    if r > hdr_row2 + 1:
+        total_row = r + 1
+        ws.cell(row=total_row, column=1, value="Column total").font = bold
+        ws.cell(row=total_row, column=1).fill = navy
+        ws.cell(row=total_row, column=2).fill = navy
+        all_item_rows = sorted({ir for rows in group_item_rows.values() for ir in rows})
+        for i in range(n_dates):
+            col = first_date_col + i
+            col_letter = get_column_letter(col)
+            if all_item_rows:
+                refs = ",".join(f"{col_letter}{ir}" for ir in all_item_rows)
+                cell = ws.cell(row=total_row, column=col, value=f"=SUM({refs})")
+            else:
+                cell = ws.cell(row=total_row, column=col, value=0)
+            cell.font = bold
+            cell.alignment = right
+            cell.fill = sunday_fill if headers[i]["is_sunday"] else navy
+            cell.number_format = "#,##0.00;-#,##0.00;—"
+        first_letter = get_column_letter(first_date_col)
+        last_letter = get_column_letter(last_date_col)
+        grand = ws.cell(
+            row=total_row, column=total_col,
+            value=f"=SUM({first_letter}{total_row}:{last_letter}{total_row})",
+        )
+        grand.font = bold
+        grand.fill = navy
+        grand.number_format = "#,##0.00;-#,##0.00;—"
+        grand.alignment = right
+
+    # Column widths + freeze panes for usability
+    ws.column_dimensions["A"].width = 42
+    ws.column_dimensions["B"].width = 10
+    for i in range(n_dates):
+        ws.column_dimensions[get_column_letter(first_date_col + i)].width = 10
+    ws.column_dimensions[get_column_letter(total_col)].width = 12
+    ws.freeze_panes = ws.cell(row=hdr_row2 + 1, column=first_date_col)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    safe_co = "".join(c if c.isalnum() else "_" for c in (company or "company"))
+    filename = f"consumption_{safe_co}_{start}_to_{end}.xlsx"
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

@@ -349,3 +349,18 @@ class ProductionEntryLine(Base):
     description: Mapped[str | None] = mapped_column(Text)
 
     entry: Mapped["ProductionEntry"] = relationship(back_populates="lines")
+
+
+class ConsumptionReportSelection(Base):
+    """Persisted selection of stock groups / items to show on the daily consumption pivot."""
+
+    __tablename__ = "consumption_report_selection"
+    __table_args__ = (
+        UniqueConstraint("company_name", "kind", "name", name="uq_consumption_selection"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)  # 'group' | 'item'
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)

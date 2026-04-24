@@ -1,0 +1,400 @@
+{% extends "base.html" %}
+{% block title %}Daily consumption{% endblock %}
+
+{% block content %}
+<style>
+  /* Let this report breathe — override the 1400px cap from base.html so the
+     pivot can use the full viewport width with only a small page margin. */
+  main { max-width: none !important; padding-left: 20px; padding-right: 20px; }
+  .cons-card { max-width: none; }
+  .cons-filters { display: grid; grid-template-columns: 1fr 140px 140px auto; gap: 12px; align-items: end; margin-top: 14px; }
+  .cons-vtypes { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 10px 14px; }
+  .cons-vtypes input { margin: 0; }
+  .vt-group { display: flex; flex-direction: column; background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; }
+  .vt-group.vt-default { border-color: var(--navy-700); background: #eef2ff; }
+  .vt-base-label { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-weight: 600; font-size: .9rem; color: var(--navy-900); cursor: pointer; }
+  .vt-count { color: var(--muted); font-weight: 500; font-size: .82rem; }
+  .vt-aliases { margin-top: 4px; }
+  .vt-aliases > summary { cursor: pointer; font-size: .78rem; color: var(--muted); list-style: revert; }
+  .vt-alias-list { padding: 6px 0 2px 14px; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 2px 12px; }
+  .vt-alias-list label { display: inline-flex; align-items: center; gap: 6px; font-weight: 400; font-size: .85rem; color: var(--ink); margin: 0; }
+  .cons-panel { margin-top: 18px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); }
+  .tree-box { max-height: 560px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; background: #fff; }
+  .tree-node { padding: 2px 0; }
+  .tree-children { margin-left: 20px; border-left: 1px dashed var(--line); padding-left: 10px; }
+  .tree-node .node-label { font-weight: 600; color: var(--navy-900); display: inline-flex; align-items: center; gap: 6px; }
+  .tree-node .leaf-label { font-weight: 400; font-size: .9rem; color: var(--ink); display: inline-flex; align-items: center; gap: 6px; }
+  .tree-node .leaves { margin-left: 22px; display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 2px 16px; }
+  .section-label { margin-top: 14px; font-size: .88rem; color: var(--ink-soft); font-weight: 600; }
+  .pivot { width: max-content; min-width: 100%; border-collapse: collapse; font-size: .88rem; }
+  .pivot th, .pivot td { padding: 6px 10px; border: 1px solid var(--line); }
+  .pivot thead th { background: var(--navy-50); color: var(--navy-900); text-align: right; white-space: nowrap; }
+  .pivot thead th.h-item { text-align: left; min-width: 280px; position: sticky; left: 0; z-index: 2; }
+  .pivot thead th.h-uom { text-align: left; }
+  .pivot thead th.dow { font-size: .72rem; font-weight: 600; color: var(--muted); text-align: center; letter-spacing: .02em; }
+  .pivot thead th.date { text-align: center; }
+  .pivot td.c-item { position: sticky; left: 0; background: #fff; text-align: left; }
+  .pivot tr.group-row { background: var(--orange-50); font-weight: 700; }
+  .pivot tr.group-row td.c-item { background: var(--orange-50); }
+  .pivot td.num { text-align: right; }
+  /* Soft shading on Sunday cells so weeks are easy to spot. */
+  .pivot th.sun, .pivot td.sun { background: #fff7ed; }
+  .pivot tr.group-row td.sun { background: #fde9c7; }
+  .pivot tfoot td { background: var(--navy-50); font-weight: 700; }
+  .pivot tfoot td.sun { background: #fde9c7; }
+  .export-bar { display: flex; gap: 8px; flex-wrap: wrap; }
+  .export-bar a, .export-bar button {
+    padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--surface-2); color: var(--navy-900); text-decoration: none;
+    font-weight: 600; font-size: .88rem; cursor: pointer;
+  }
+  .export-bar a:hover, .export-bar button:hover { background: var(--navy-50); }
+  @media print {
+    header, .menu-btn, .drawer, .export-bar, form.cons-filters, .cons-filters { display: none !important; }
+    main { padding: 0 !important; max-width: none !important; }
+    .card { box-shadow: none !important; border: none !important; padding: 0 !important; }
+    .pivot { font-size: .72rem; }
+    .pivot td.c-item { position: static; }
+  }
+</style>
+
+<div class="card cons-card">
+  <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+    <h1 style="margin:0">{% if configure %}Configure items{% else %}Daily Stock Consumption{% endif %}</h1>
+    <div class="export-bar">
+      {% if not configure %}
+      <a href="/consumption/export.xlsx?company={{ selected_company }}&start={{ start }}&end={{ end }}">⬇ Export Excel</a>
+      <button type="button" onclick="window.print()">🖨 Export PDF</button>
+      {% endif %}
+      <a href="/consumption?company={{ selected_company }}&start={{ start }}&end={{ end }}&configure={{ 0 if configure else 1 }}"
+         style="background:var(--navy-50);">
+        {% if configure %}✕ Back to report{% else %}⚙ Configure items ({{ selection_count }}){% endif %}
+      </a>
+    </div>
+  </div>
+
+  {# ------------------------------------------------------------------ #}
+  {# Main report filters (company / date range). No voucher-type picker #}
+  {# here — that moved to the Configure Items screen.                   #}
+  {# ------------------------------------------------------------------ #}
+  {% if not configure %}
+  <form method="get" action="/consumption">
+    <div class="cons-filters">
+      <label>Company
+        <select name="company">
+          {% for c in companies %}
+          <option value="{{ c }}" {% if c == selected_company %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>From<input type="date" name="start" value="{{ start }}"></label>
+      <label>To<input type="date" name="end" value="{{ end }}"></label>
+      <button type="submit">Refresh</button>
+    </div>
+    {% if voucher_types %}
+    <p class="muted" style="margin:10px 0 0 0; font-size:.82rem;">
+      Voucher types in use ({{ voucher_types|length }}): {{ voucher_types|join(', ') }}
+      &middot; <a href="/consumption?company={{ selected_company }}&start={{ start }}&end={{ end }}&configure=1" style="color:var(--navy-700);">change</a>
+    </p>
+    {% endif %}
+  </form>
+  {% endif %}
+
+  {# ------------------------------------------------------------------ #}
+  {# Configure Items screen: one form containing voucher-type chips +   #}
+  {# stock-group / item tree. Saving persists both and returns to main. #}
+  {# ------------------------------------------------------------------ #}
+  {% if configure %}
+  <form method="post" action="/consumption/selection" id="selection-form">
+    <input type="hidden" name="company" value="{{ selected_company }}">
+    <input type="hidden" name="start" value="{{ start }}">
+    <input type="hidden" name="end" value="{{ end }}">
+
+    <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:12px;">
+      <a href="/consumption?company={{ selected_company }}&start={{ start }}&end={{ end }}"
+         style="padding:8px 14px; border-radius:8px; background:var(--surface-2); color:var(--navy-900); text-decoration:none; font-weight:600; border:1px solid var(--line);">
+        Cancel
+      </a>
+      <button type="submit">Save selection</button>
+    </div>
+
+    <div class="section-label">Voucher types</div>
+    <p class="muted" style="margin:2px 0 0 0; font-size:.82rem;">
+      Only voucher types that actually carry stock movements are listed. Ticking a base type (blue) ticks all its aliases.
+    </p>
+    <div class="cons-vtypes" id="vt-chips">
+      {% for group in base_groups %}
+        {% set all_ticked = group.aliases | select("in", selected_vtypes_set) | list | length == group.aliases | length %}
+        {% set any_ticked = group.aliases | select("in", selected_vtypes_set) | list | length > 0 %}
+        <div class="vt-group {% if group.is_tally_default %}vt-default{% endif %}">
+          <label class="vt-base-label">
+            <input type="checkbox" class="vt-base-cb"
+                   data-base="{{ group.base }}"
+                   {% if all_ticked %}checked{% elif any_ticked %}data-indeterminate="1"{% endif %}>
+            <span>{{ group.base }}</span>
+            {% if group.aliases|length > 1 or group.aliases[0] != group.base %}
+              <span class="vt-count">({{ group.aliases|length }})</span>
+            {% endif %}
+          </label>
+          {% if group.aliases|length > 1 or group.aliases[0] != group.base %}
+          <details class="vt-aliases">
+            <summary>aliases</summary>
+            <div class="vt-alias-list">
+              {% for a in group.aliases %}
+              <label>
+                <input type="checkbox" class="vt-alias-cb"
+                       name="voucher_types" value="{{ a }}"
+                       data-base="{{ group.base }}"
+                       {% if a in selected_vtypes_set %}checked{% endif %}>
+                <span>{{ a }}</span>
+              </label>
+              {% endfor %}
+            </div>
+          </details>
+          {% else %}
+            <input type="checkbox" class="vt-alias-cb" style="display:none"
+                   name="voucher_types" value="{{ group.aliases[0] }}"
+                   data-base="{{ group.base }}"
+                   {% if group.aliases[0] in selected_vtypes_set %}checked{% endif %}>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+
+    <div class="section-label" style="margin-top:18px;">Stock groups / items</div>
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+      <p class="muted" style="margin:2px 0 0 0; font-size:.82rem;">
+        Ticking a group auto-ticks all its sub-groups and items. The list is collapsed by default — click a group to expand.
+      </p>
+      <div style="display:flex; gap:6px;">
+        <button type="button" id="tree-expand-all" style="background:var(--surface-2); color:var(--navy-900); border:1px solid var(--line); padding:6px 10px;">Expand all</button>
+        <button type="button" id="tree-collapse-all" style="background:var(--surface-2); color:var(--navy-900); border:1px solid var(--line); padding:6px 10px;">Collapse all</button>
+      </div>
+    </div>
+    <div class="tree-box" id="tree-box" style="margin-top:8px;">
+      {% macro render_node(node) -%}
+        <details class="tree-node">
+          <summary class="node-label">
+            <input type="checkbox" class="group-cb" name="group" value="{{ node.name }}"
+                   {% if node.name in selected_groups %}checked{% endif %}>
+            <span>📁 {{ node.name }}</span>
+          </summary>
+          <div class="tree-children">
+            {% if node['items'] %}
+            <div class="leaves">
+              {% for it in node['items'] %}
+              <label class="leaf-label">
+                <input type="checkbox" class="item-cb" name="item" value="{{ it }}"
+                       {% if it in selected_items %}checked{% endif %}>
+                <span>{{ it }}</span>
+              </label>
+              {% endfor %}
+            </div>
+            {% endif %}
+            {% for child in node.children %}
+              {{ render_node(child) }}
+            {% endfor %}
+          </div>
+        </details>
+      {%- endmacro %}
+      {% for root in groups_tree %}
+        {{ render_node(root) }}
+      {% else %}
+        <p class="muted">No stock groups found for this company.</p>
+      {% endfor %}
+    </div>
+  </form>
+
+  <script>
+  (function () {
+    var vtBox = document.getElementById("vt-chips");
+    if (vtBox) {
+      vtBox.querySelectorAll('.vt-base-cb[data-indeterminate="1"]').forEach(function (cb) {
+        cb.indeterminate = true;
+      });
+      function syncBase(base) {
+        var baseCb = vtBox.querySelector('.vt-base-cb[data-base="' + CSS.escape(base) + '"]');
+        if (!baseCb) return;
+        var aliases = vtBox.querySelectorAll('.vt-alias-cb[data-base="' + CSS.escape(base) + '"]');
+        var checked = 0;
+        aliases.forEach(function (a) { if (a.checked) checked++; });
+        baseCb.checked = checked === aliases.length && aliases.length > 0;
+        baseCb.indeterminate = checked > 0 && checked < aliases.length;
+      }
+      vtBox.addEventListener("change", function (e) {
+        var t = e.target;
+        if (!t || t.tagName !== "INPUT") return;
+        if (t.classList.contains("vt-base-cb")) {
+          var base = t.getAttribute("data-base");
+          vtBox.querySelectorAll('.vt-alias-cb[data-base="' + CSS.escape(base) + '"]').forEach(function (a) {
+            a.checked = t.checked;
+          });
+          t.indeterminate = false;
+        } else if (t.classList.contains("vt-alias-cb")) {
+          syncBase(t.getAttribute("data-base"));
+        }
+      });
+    }
+
+    var box = document.getElementById("tree-box");
+    if (!box) return;
+    box.addEventListener("change", function (e) {
+      var t = e.target;
+      if (!t || t.tagName !== "INPUT" || t.type !== "checkbox") return;
+      if (!t.classList.contains("group-cb")) return;
+      var scope = t.closest(".tree-node");
+      if (!scope) return;
+      scope.querySelectorAll('.tree-children input[type="checkbox"]').forEach(function (cb) {
+        cb.checked = t.checked;
+      });
+    });
+    box.addEventListener("click", function (e) {
+      if (e.target && e.target.tagName === "INPUT" && e.target.type === "checkbox") {
+        e.stopPropagation();
+      }
+    });
+    document.getElementById("tree-expand-all").addEventListener("click", function () {
+      box.querySelectorAll("details").forEach(function (d) { d.open = true; });
+    });
+    document.getElementById("tree-collapse-all").addEventListener("click", function () {
+      box.querySelectorAll("details").forEach(function (d) { d.open = false; });
+    });
+  })();
+  </script>
+  {% endif %}
+
+  {# ------------------------------------------------------------------ #}
+  {# Pivot table: only on the main (non-configure) screen.              #}
+  {# ------------------------------------------------------------------ #}
+  {% if not configure %}
+  {% set dates = pivot.dates %}
+  {% set date_headers = pivot.date_headers %}
+  <div style="margin-top:14px; overflow:auto; border:1px solid var(--line); border-radius:10px; background:#fff;">
+    <table class="pivot">
+      <thead>
+        <tr>
+          <th class="h-item" rowspan="2">ITEM NAME</th>
+          <th class="h-uom" rowspan="2">UOM</th>
+          {% for h in date_headers %}
+            <th class="dow {% if h.is_sunday %}sun{% endif %}">{{ h.weekday }}</th>
+          {% endfor %}
+          <th rowspan="2">Total</th>
+        </tr>
+        <tr>
+          {% for h in date_headers %}
+            <th class="date {% if h.is_sunday %}sun{% endif %}">{{ h.label }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody id="pivot-body">
+        {% for row in pivot.rows %}
+          {% if row.kind == 'group' %}
+          <tr class="group-row" data-row-id="{{ row.id }}" data-ancestors="{{ row.ancestors|join(',') }}" data-depth="{{ row.depth }}">
+            <td class="c-item">
+              <span style="display:inline-flex; align-items:center; gap:6px; padding-left:{{ row.depth * 16 }}px;">
+                <button type="button" class="grp-toggle" data-target="{{ row.id }}" aria-expanded="true"
+                        style="width:18px; height:18px; border:1px solid var(--line); background:#fff; border-radius:4px; font-size:.7rem; line-height:1; padding:0; cursor:pointer; color:var(--navy-900);">▾</button>
+                <span>📁 {{ row.name }}</span>
+              </span>
+            </td>
+            <td>—</td>
+            {% for h in date_headers %}
+              {% set v = row.subtotal_by_date.get(h.iso, 0) %}
+              <td class="num {% if h.is_sunday %}sun{% endif %}">{{ ('%.2f' % v) if v else '-' }}</td>
+            {% endfor %}
+            <td class="num">{{ '%.2f' % row.subtotal }}</td>
+          </tr>
+          {% else %}
+          <tr data-row-id="{{ row.id }}" data-ancestors="{{ row.ancestors|join(',') }}" data-depth="{{ row.depth }}">
+            <td class="c-item" style="padding-left:{{ (row.depth * 16) + 22 }}px;">{{ row.name }}</td>
+            <td style="color:var(--muted);">{{ row.uom }}</td>
+            {% for h in date_headers %}
+              {% set v = row.by_date.get(h.iso, 0) %}
+              <td class="num {% if h.is_sunday %}sun{% endif %}">{{ ('%.2f' % v) if v else '' }}</td>
+            {% endfor %}
+            <td class="num" style="font-weight:600;">{{ ('%.2f' % row.total) if row.total else '-' }}</td>
+          </tr>
+          {% endif %}
+        {% else %}
+          <tr>
+            <td colspan="{{ dates|length + 3 }}" style="padding:20px; text-align:center; color:var(--muted);">
+              {% if selection_count == 0 %}
+                No items selected. Click <strong>Configure items</strong> to choose stock groups or items.
+              {% else %}
+                No consumption data for the selected items in this date range.
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+      {% if pivot.by_group %}
+      <tfoot>
+        <tr>
+          <td class="c-item" style="background:var(--navy-50);">Column total</td>
+          <td></td>
+          {% for h in date_headers %}
+            {% set v = pivot.column_totals.get(h.iso, 0) %}
+            <td class="num {% if h.is_sunday %}sun{% endif %}">{{ ('%.2f' % v) if v else '-' }}</td>
+          {% endfor %}
+          <td class="num">{{ '%.2f' % pivot.grand_total }}</td>
+        </tr>
+      </tfoot>
+      {% endif %}
+    </table>
+  </div>
+
+  <div class="export-bar" style="margin-top:10px;">
+    <button type="button" id="expand-all-groups">⊕ Expand all groups</button>
+    <button type="button" id="collapse-all-groups">⊖ Collapse all groups</button>
+  </div>
+
+  <script>
+  (function () {
+    var body = document.getElementById("pivot-body");
+    if (!body) return;
+
+    // Each descendant row tracks which collapsed ancestors are hiding it via
+    // the `collapsed-by` Set — a row is shown only when that set is empty.
+    body.querySelectorAll("tr[data-ancestors]").forEach(function (tr) {
+      tr._collapsedBy = new Set();
+    });
+
+    function applyVisibility(tr) {
+      tr.style.display = tr._collapsedBy && tr._collapsedBy.size ? "none" : "";
+    }
+
+    function setCollapsed(gid, collapsed) {
+      var btn = body.querySelector('.grp-toggle[data-target="' + gid + '"]');
+      if (btn) {
+        btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+        btn.textContent = collapsed ? "▸" : "▾";
+      }
+      body.querySelectorAll('tr[data-ancestors]').forEach(function (tr) {
+        var anc = (tr.dataset.ancestors || "").split(",").filter(Boolean);
+        if (anc.indexOf(gid) === -1) return;
+        if (!tr._collapsedBy) tr._collapsedBy = new Set();
+        if (collapsed) tr._collapsedBy.add(gid); else tr._collapsedBy.delete(gid);
+        applyVisibility(tr);
+      });
+    }
+
+    body.addEventListener("click", function (e) {
+      var btn = e.target.closest(".grp-toggle");
+      if (!btn) return;
+      e.preventDefault();
+      var gid = btn.dataset.target;
+      var collapsed = btn.getAttribute("aria-expanded") === "true"; // currently expanded → collapse
+      setCollapsed(gid, collapsed);
+    });
+
+    document.getElementById("expand-all-groups").addEventListener("click", function () {
+      body.querySelectorAll(".grp-toggle").forEach(function (b) { setCollapsed(b.dataset.target, false); });
+    });
+    document.getElementById("collapse-all-groups").addEventListener("click", function () {
+      body.querySelectorAll(".grp-toggle").forEach(function (b) { setCollapsed(b.dataset.target, true); });
+    });
+  })();
+  </script>
+  {% endif %}
+</div>
+{% endblock %}
