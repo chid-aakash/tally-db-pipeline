@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
@@ -65,9 +66,6 @@ STANDARD_BASE_VOUCHER_TYPES = set(STANDARD_VOUCHER_TYPES) | {
     "Payroll",
 }
 
-
-class VoucherRangeValidationError(RuntimeError):
-    pass
 
 _COMPANY_FY_SUFFIX_RE = re.compile(r"^(?P<stem>.*?)(?:\s*-\s*(?P<start>20\d{2})\s*-\s*(?P<end>\d{2,4}))$")
 
@@ -150,6 +148,32 @@ def _upsert_checkpoint(
     if status == "success":
         checkpoint.last_success_at = datetime.utcnow()
     session.commit()
+
+
+def _bump_alterid_checkpoint(session: Session, company_name: str, new_max: int | None) -> None:
+    # Opportunistically promotes the max AlterID seen by any voucher sync path
+    # into the dedicated `vouchers_alterid` checkpoint, so an AlterID-based
+    # resync works without a full initial re-pull. Only advances the marker —
+    # never regresses it.
+    if new_max is None:
+        return
+    existing = _get_checkpoint(session, entity_type="vouchers_alterid", company_name=company_name)
+    current_max = 0
+    if existing and existing.last_marker:
+        try:
+            current_max = int(existing.last_marker)
+        except (TypeError, ValueError):
+            current_max = 0
+    if new_max <= current_max:
+        return
+    _upsert_checkpoint(
+        session,
+        entity_type="vouchers_alterid",
+        company_name=company_name,
+        status="success",
+        marker=str(new_max),
+        row_count=existing.last_row_count if existing else 0,
+    )
 
 
 def _upsert_by_name(session: Session, model, name: str, values: dict, *, company_name: str | None = None):
@@ -305,6 +329,11 @@ def _iter_date_windows(
     *,
     newest_first: bool = False,
 ) -> list[tuple[str, str]]:
+    # Windows are always month-aligned (boundaries on the 1st and last day of a
+    # month). Tally's CHILDOF+BELONGSTO collection returns nothing when
+    # SVFROMDATE is a non-boundary date, so non-aligned windows silently lose
+    # data. chunk_days is retained for API compatibility but ignored — one
+    # calendar month per window is the safe unit.
     if chunk_days <= 0:
         raise ValueError("chunk_days must be positive.")
     start = _parse_iso_date(start_date)
@@ -314,15 +343,20 @@ def _iter_date_windows(
 
     windows: list[tuple[str, str]] = []
     cursor = start
-    delta = timedelta(days=chunk_days - 1)
-    one_day = timedelta(days=1)
     while cursor <= end:
-        window_end = min(cursor + delta, end)
+        next_month_first = _first_of_next_month(cursor)
+        window_end = min(next_month_first - timedelta(days=1), end)
         windows.append((_format_iso_date(cursor), _format_iso_date(window_end)))
-        cursor = window_end + one_day
+        cursor = next_month_first
     if newest_first:
         windows.reverse()
     return windows
+
+
+def _first_of_next_month(d: datetime) -> datetime:
+    if d.month == 12:
+        return datetime(d.year + 1, 1, 1)
+    return datetime(d.year, d.month + 1, 1)
 
 
 def _window_day_count(start_date: str, end_date: str) -> int:
@@ -342,41 +376,24 @@ def _split_window(start_date: str, end_date: str) -> tuple[tuple[str, str], tupl
     return ((start_date, first_end), (second_start, end_date))
 
 
-def _validate_voucher_dates_within_range(vouchers: list[dict], from_date: str | None, to_date: str | None) -> None:
+def _filter_voucher_dates_within_range(vouchers: list[dict], from_date: str | None, to_date: str | None) -> list[dict]:
     if not vouchers or (from_date is None and to_date is None):
-        return
+        return vouchers
 
     start = _parse_iso_date(from_date) if from_date else None
     end = _parse_iso_date(to_date) if to_date else None
-    out_of_range: list[str] = []
-    missing_dates = 0
+    kept: list[dict] = []
     for row in vouchers:
         raw_date = row.get("voucher_date")
         if not raw_date:
-            missing_dates += 1
             continue
         parsed = _parse_iso_date(raw_date)
         if start and parsed < start:
-            out_of_range.append(raw_date)
             continue
         if end and parsed > end:
-            out_of_range.append(raw_date)
-
-    if missing_dates or out_of_range:
-        details: list[str] = []
-        if out_of_range:
-            unique_dates = sorted(set(out_of_range))
-            sample = ", ".join(unique_dates[:5])
-            if len(unique_dates) > 5:
-                sample += ", ..."
-            details.append(f"out-of-range dates: {sample}")
-        if missing_dates:
-            details.append(f"missing dates: {missing_dates}")
-        requested = f"{from_date or '?'}..{to_date or '?'}"
-        raise VoucherRangeValidationError(
-            "Tally returned voucher rows outside the requested date window "
-            f"({requested}); refusing to treat this as a valid chunked/incremental response ({'; '.join(details)})."
-        )
+            continue
+        kept.append(row)
+    return kept
 
 
 def _fetch_vouchers_for_range(
@@ -422,7 +439,7 @@ def _fetch_vouchers_for_range(
     if line_error:
         raise RuntimeError(line_error)
     vouchers = parse_vouchers(payload["response_xml"])
-    _validate_voucher_dates_within_range(vouchers, from_date, to_date)
+    vouchers = _filter_voucher_dates_within_range(vouchers, from_date, to_date)
     return {"payload": payload, "vouchers": vouchers}
 
 
@@ -944,6 +961,310 @@ def sync_voucher_types(session: Session, client: TallyClient, company_name: str 
         raise
 
 
+def _upsert_voucher_rows(
+    session: Session,
+    *,
+    company_name: str,
+    vouchers: list[dict],
+    voucher_type_rows: list[dict],
+    voucher_progress_callback: Callable[[dict], None] | None = None,
+) -> dict:
+    saved = 0
+    exact_voucher_types: set[str] = set()
+    latest_marker: str | None = None
+    max_alter_id: int | None = None
+    total_count = len(vouchers)
+    for row in vouchers:
+        guid = row.get("guid")
+        if not guid:
+            continue
+        voucher_t0 = time.monotonic()
+
+        voucher_type_name = row.get("voucher_type_name")
+        if voucher_type_name:
+            exact_voucher_types.add(voucher_type_name)
+
+        voucher = session.scalar(select(Voucher).where(Voucher.guid == guid))
+        if voucher is None:
+            voucher = Voucher(guid=guid, company_name=company_name, voucher_type_name=row["voucher_type_name"])
+            session.add(voucher)
+            session.flush()
+        else:
+            voucher.inventory_entries.clear()
+            voucher.ledger_entries.clear()
+            voucher.unknown_sections.clear()
+
+        voucher.company_name = company_name
+        voucher.voucher_type_name = row["voucher_type_name"]
+        voucher.base_voucher_type = resolve_voucher_base_type(row["voucher_type_name"], voucher_type_rows)
+        voucher.voucher_date = row["voucher_date"]
+        voucher.voucher_number = row["voucher_number"]
+        voucher.party_name = row["party_name"]
+        voucher.narration = row["narration"]
+        voucher.party_gstin = row["party_gstin"]
+        voucher.place_of_supply = row["place_of_supply"]
+        voucher.is_cancelled = row["is_cancelled"]
+        voucher.is_optional = row["is_optional"]
+        if row.get("alter_id") is not None:
+            voucher.alter_id = row["alter_id"]
+            if max_alter_id is None or row["alter_id"] > max_alter_id:
+                max_alter_id = row["alter_id"]
+        if row.get("master_id") is not None:
+            voucher.master_id = row["master_id"]
+        voucher.last_synced_at = datetime.utcnow()
+
+        for item in row["inventory_entries"]:
+            voucher.inventory_entries.append(
+                VoucherInventoryEntry(
+                    item_name=item["item_name"],
+                    quantity=item["quantity"],
+                    uom=item["uom"],
+                    rate=item["rate"],
+                    amount=item["amount"],
+                    hsn=item["hsn"],
+                    ledger_name=item["ledger_name"],
+                    ledger_amount=item["ledger_amount"],
+                    is_deemed_positive=item["is_deemed_positive"],
+                    gst_rates_json=json.dumps(item["gst_rates"], sort_keys=True),
+                )
+            )
+
+        for item in row["ledger_entries"]:
+            voucher.ledger_entries.append(
+                VoucherLedgerEntry(
+                    ledger_name=item["ledger_name"],
+                    amount=item["amount"],
+                    is_deemed_positive=item["is_deemed_positive"],
+                    is_party_ledger=item["is_party_ledger"],
+                    tax_rate=item["tax_rate"],
+                    bill_allocations_json=json.dumps(item["bill_allocations"], sort_keys=True),
+                    bank_allocations_json=json.dumps(item["bank_allocations"], sort_keys=True),
+                )
+            )
+
+        for item in row["unknown_sections"]:
+            voucher.unknown_sections.append(
+                VoucherUnknownSection(
+                    section_tag=item["tag"],
+                    section_xml=item["xml"],
+                )
+            )
+
+        saved += 1
+        voucher_date = row.get("voucher_date")
+        if voucher_date and (latest_marker is None or voucher_date > latest_marker):
+            latest_marker = voucher_date
+        if voucher_progress_callback is not None:
+            voucher_progress_callback(
+                {
+                    "index": saved,
+                    "total": total_count,
+                    "guid": guid,
+                    "voucher_type_name": row.get("voucher_type_name"),
+                    "voucher_date": voucher_date,
+                    "voucher_number": row.get("voucher_number"),
+                    "party_name": row.get("party_name"),
+                    "alter_id": row.get("alter_id"),
+                    "elapsed_ms": int((time.monotonic() - voucher_t0) * 1000),
+                }
+            )
+    return {
+        "saved": saved,
+        "exact_voucher_types": exact_voucher_types,
+        "latest_marker": latest_marker,
+        "max_alter_id": max_alter_id,
+    }
+
+
+def sync_vouchers_by_alterid(
+    session: Session,
+    client: TallyClient,
+    *,
+    company_name: str,
+    since_alter_id: int | None = None,
+    upto_alter_id: int | None = None,
+    update_checkpoint: bool = True,
+    voucher_progress_callback: Callable[[dict], None] | None = None,
+) -> dict:
+    """Incremental voucher sync via Tally's $AlterID counter.
+
+    Pulls every voucher with $AlterID > since_alter_id (no date window), which
+    catches newly created and edited vouchers — including back-dated edits.
+    When since_alter_id is None, reads the last max from the sync checkpoint;
+    if none exists, starts from 0 (full initial sync).
+    """
+    entity_type = "vouchers_alterid"
+    if since_alter_id is None:
+        checkpoint = _get_checkpoint(session, entity_type=entity_type, company_name=company_name)
+        if checkpoint and checkpoint.last_marker:
+            try:
+                since_alter_id = int(checkpoint.last_marker)
+            except (TypeError, ValueError):
+                since_alter_id = 0
+        else:
+            since_alter_id = 0
+
+    run = _start_run(session, "vouchers:alterid", company_name=company_name)
+    try:
+        voucher_type_rows = _load_voucher_type_rows(session, company_name)
+        payload = client.execute(
+            "vouchers_alterid",
+            client.build_voucher_alterid_collection_xml(
+                company_name,
+                since_alter_id=since_alter_id,
+                upto_alter_id=upto_alter_id,
+            ),
+        )
+        _record_payload(session, run, payload, company_name=company_name)
+        line_error = client.extract_line_error(payload["response_xml"])
+        if line_error:
+            raise RuntimeError(line_error)
+        vouchers = parse_vouchers(payload["response_xml"])
+
+        upsert_summary = _upsert_voucher_rows(
+            session,
+            company_name=company_name,
+            vouchers=vouchers,
+            voucher_type_rows=voucher_type_rows,
+            voucher_progress_callback=voucher_progress_callback,
+        )
+        session.commit()
+
+        new_max = upsert_summary["max_alter_id"]
+        checkpoint_marker = str(new_max) if new_max is not None else str(since_alter_id)
+        if update_checkpoint:
+            _upsert_checkpoint(
+                session,
+                entity_type=entity_type,
+                company_name=company_name,
+                status="success",
+                row_count=upsert_summary["saved"],
+                marker=checkpoint_marker,
+            )
+        _finish_run(session, run, "success")
+        return {
+            "since_alter_id": since_alter_id,
+            "upto_alter_id": upto_alter_id,
+            "saved": upsert_summary["saved"],
+            "max_alter_id": new_max,
+            "fetched": len(vouchers),
+            "matched_voucher_types": sorted(upsert_summary["exact_voucher_types"]),
+        }
+    except Exception as exc:
+        session.rollback()
+        _upsert_checkpoint(
+            session,
+            entity_type=entity_type,
+            company_name=company_name,
+            status="failed",
+            error_message=str(exc),
+        )
+        _finish_run(session, run, "failed", error_message=str(exc))
+        raise
+
+
+def sync_vouchers_by_alterid_banded(
+    session: Session,
+    client: TallyClient,
+    *,
+    company_name: str,
+    since_alter_id: int | None = None,
+    band_size: int = 2000,
+    max_bands: int = 200,
+    band_progress_callback: Callable[[dict], None] | None = None,
+    voucher_progress_callback: Callable[[dict], None] | None = None,
+) -> dict:
+    """Banded AlterID sync for large backfills.
+
+    Fetches vouchers in contiguous AlterID bands of `band_size` to keep each
+    Tally request under the HTTP timeout. Stops when a band returns zero rows.
+    Updates the checkpoint once at the end with the overall max AlterID.
+    """
+    entity_type = "vouchers_alterid"
+    if since_alter_id is None:
+        checkpoint = _get_checkpoint(session, entity_type=entity_type, company_name=company_name)
+        if checkpoint and checkpoint.last_marker:
+            try:
+                since_alter_id = int(checkpoint.last_marker)
+            except (TypeError, ValueError):
+                since_alter_id = 0
+        else:
+            since_alter_id = 0
+
+    # Cheap probe: narrow-fetch scan to discover the true max AlterID so we
+    # know when to stop. This is safe even for 7k+ vouchers (no full payload).
+    probe_xml = client.build_voucher_alterid_collection_xml(
+        company_name, since_alter_id=since_alter_id, full_fetch=False,
+    )
+    probe_payload = client.execute("vouchers_alterid_probe", probe_xml)
+    probe_vouchers = parse_vouchers(probe_payload["response_xml"])
+    candidate_max = max(
+        (v["alter_id"] for v in probe_vouchers if v.get("alter_id") is not None),
+        default=since_alter_id,
+    )
+    total_to_fetch = sum(
+        1 for v in probe_vouchers
+        if v.get("alter_id") is not None and v["alter_id"] > since_alter_id
+    )
+
+    overall_saved = 0
+    overall_fetched = 0
+    overall_max = since_alter_id
+    band_results: list[dict] = []
+    lower = since_alter_id
+    while lower < candidate_max:
+        upper = min(lower + band_size, candidate_max)
+        band_t0 = time.monotonic()
+        result = sync_vouchers_by_alterid(
+            session,
+            client,
+            company_name=company_name,
+            since_alter_id=lower,
+            upto_alter_id=upper,
+            update_checkpoint=False,
+            voucher_progress_callback=voucher_progress_callback,
+        )
+        elapsed = time.monotonic() - band_t0
+        band_info = {
+            "band_index": len(band_results),
+            "lower": lower,
+            "upper": upper,
+            "fetched": result["fetched"],
+            "saved": result["saved"],
+            "max_alter_id": result["max_alter_id"],
+            "elapsed_s": round(elapsed, 2),
+        }
+        band_results.append(band_info)
+        if band_progress_callback is not None:
+            band_progress_callback(band_info)
+
+        overall_fetched += result["fetched"]
+        overall_saved += result["saved"]
+        if result["max_alter_id"] is not None and result["max_alter_id"] > overall_max:
+            overall_max = result["max_alter_id"]
+        lower = upper
+        if len(band_results) >= max_bands:
+            break
+
+    _upsert_checkpoint(
+        session,
+        entity_type=entity_type,
+        company_name=company_name,
+        status="success",
+        row_count=overall_saved,
+        marker=str(overall_max),
+    )
+    return {
+        "since_alter_id": since_alter_id,
+        "saved": overall_saved,
+        "fetched": overall_fetched,
+        "max_alter_id": overall_max,
+        "band_count": len(band_results),
+        "total_to_fetch_probe": total_to_fetch,
+        "bands": band_results,
+    }
+
+
 def sync_vouchers(
     session: Session,
     client: TallyClient,
@@ -952,6 +1273,7 @@ def sync_vouchers(
     from_date: str | None = None,
     to_date: str | None = None,
     range_mode: str = "collection",
+    voucher_progress_callback: Callable[[dict], None] | None = None,
 ) -> dict:
     if range_mode not in {"daybook", "collection"}:
         raise ValueError("range_mode must be either 'daybook' or 'collection'.")
@@ -983,83 +1305,17 @@ def sync_vouchers(
                 raise RuntimeError(line_error)
             vouchers = parse_vouchers(payload["response_xml"])
 
-        saved = 0
-        exact_voucher_types: set[str] = set()
-        latest_marker = None
-        for row in vouchers:
-            guid = row.get("guid")
-            if not guid:
-                continue
-
-            voucher_type_name = row.get("voucher_type_name")
-            if voucher_type_name:
-                exact_voucher_types.add(voucher_type_name)
-
-            voucher = session.scalar(select(Voucher).where(Voucher.guid == guid))
-            if voucher is None:
-                voucher = Voucher(guid=guid, company_name=company_name, voucher_type_name=row["voucher_type_name"])
-                session.add(voucher)
-                session.flush()
-            else:
-                voucher.inventory_entries.clear()
-                voucher.ledger_entries.clear()
-                voucher.unknown_sections.clear()
-
-            voucher.company_name = company_name
-            voucher.voucher_type_name = row["voucher_type_name"]
-            voucher.base_voucher_type = resolve_voucher_base_type(row["voucher_type_name"], voucher_type_rows)
-            voucher.voucher_date = row["voucher_date"]
-            voucher.voucher_number = row["voucher_number"]
-            voucher.party_name = row["party_name"]
-            voucher.narration = row["narration"]
-            voucher.party_gstin = row["party_gstin"]
-            voucher.place_of_supply = row["place_of_supply"]
-            voucher.is_cancelled = row["is_cancelled"]
-            voucher.is_optional = row["is_optional"]
-            voucher.last_synced_at = datetime.utcnow()
-
-            for item in row["inventory_entries"]:
-                voucher.inventory_entries.append(
-                    VoucherInventoryEntry(
-                        item_name=item["item_name"],
-                        quantity=item["quantity"],
-                        uom=item["uom"],
-                        rate=item["rate"],
-                        amount=item["amount"],
-                        hsn=item["hsn"],
-                        ledger_name=item["ledger_name"],
-                        ledger_amount=item["ledger_amount"],
-                        is_deemed_positive=item["is_deemed_positive"],
-                        gst_rates_json=json.dumps(item["gst_rates"], sort_keys=True),
-                    )
-                )
-
-            for item in row["ledger_entries"]:
-                voucher.ledger_entries.append(
-                    VoucherLedgerEntry(
-                        ledger_name=item["ledger_name"],
-                        amount=item["amount"],
-                        is_deemed_positive=item["is_deemed_positive"],
-                        is_party_ledger=item["is_party_ledger"],
-                        tax_rate=item["tax_rate"],
-                        bill_allocations_json=json.dumps(item["bill_allocations"], sort_keys=True),
-                        bank_allocations_json=json.dumps(item["bank_allocations"], sort_keys=True),
-                    )
-                )
-
-            for item in row["unknown_sections"]:
-                voucher.unknown_sections.append(
-                    VoucherUnknownSection(
-                        section_tag=item["tag"],
-                        section_xml=item["xml"],
-                    )
-                )
-
-            saved += 1
-            voucher_date = row.get("voucher_date")
-            if voucher_date and (latest_marker is None or voucher_date > latest_marker):
-                latest_marker = voucher_date
-
+        upsert_summary = _upsert_voucher_rows(
+            session,
+            company_name=company_name,
+            vouchers=vouchers,
+            voucher_type_rows=voucher_type_rows,
+            voucher_progress_callback=voucher_progress_callback,
+        )
+        saved = upsert_summary["saved"]
+        exact_voucher_types = upsert_summary["exact_voucher_types"]
+        latest_marker = upsert_summary["latest_marker"]
+        max_alter_id = upsert_summary.get("max_alter_id")
         session.commit()
         _upsert_checkpoint(
             session,
@@ -1069,6 +1325,7 @@ def sync_vouchers(
             row_count=saved,
             marker=latest_marker,
         )
+        _bump_alterid_checkpoint(session, company_name, max_alter_id)
         _finish_run(session, run, "success")
         return {
             "voucher_type": voucher_type,
@@ -1106,6 +1363,7 @@ def sync_vouchers_in_chunks(
     range_mode: str = "collection",
     newest_first: bool = True,
     progress_callback: Callable[[dict], None] | None = None,
+    voucher_progress_callback: Callable[[dict], None] | None = None,
 ) -> list[dict]:
     results: list[dict] = []
     for from_date, to_date in _iter_date_windows(start_date, end_date, chunk_days, newest_first=newest_first):
@@ -1128,6 +1386,7 @@ def sync_vouchers_in_chunks(
                 from_date=from_date,
                 to_date=to_date,
                 range_mode=range_mode,
+                voucher_progress_callback=voucher_progress_callback,
             )
             results.append(result)
             if progress_callback is not None:
@@ -1204,6 +1463,7 @@ def sync_vouchers_incremental(
     range_mode: str = "collection",
     newest_first: bool = True,
     progress_callback: Callable[[dict], None] | None = None,
+    voucher_progress_callback: Callable[[dict], None] | None = None,
 ) -> list[dict]:
     checkpoint = _get_checkpoint(session, entity_type=f"vouchers:{voucher_type}", company_name=company_name)
     start_date = since_date
@@ -1230,6 +1490,7 @@ def sync_vouchers_incremental(
         range_mode=range_mode,
         newest_first=newest_first,
         progress_callback=progress_callback,
+        voucher_progress_callback=voucher_progress_callback,
     )
 
 
@@ -1434,11 +1695,20 @@ def sync_standard_vouchers(
     client: TallyClient,
     company_name: str,
     continue_on_error: bool = False,
+    voucher_progress_callback: Callable[[dict], None] | None = None,
 ) -> list[dict]:
     results: list[dict] = []
     for voucher_type in STANDARD_VOUCHER_TYPES:
         try:
-            results.append(sync_vouchers(session, client, company_name=company_name, voucher_type=voucher_type))
+            results.append(
+                sync_vouchers(
+                    session,
+                    client,
+                    company_name=company_name,
+                    voucher_type=voucher_type,
+                    voucher_progress_callback=voucher_progress_callback,
+                )
+            )
         except Exception as exc:
             results.append({"voucher_type": voucher_type, "saved": 0, "error": str(exc)})
             if not continue_on_error:
@@ -1453,19 +1723,25 @@ def recommended_voucher_types_from_profile(
     include_custom: bool = True,
     min_count: int = 1,
 ) -> list[str]:
+    # Return the exact `voucher_type_name` seen by the profiler (not the
+    # resolved base type). The per-sync voucher_type filter is an exact-name
+    # match for non-built-in types, so iterating by base type silently drops
+    # user-defined children like "Stock Journal Consumables" (base "Stock
+    # Journal") or "Purchase Order - Regular" (base "Purchase Order").
     recommended: list[str] = []
     seen: set[str] = set()
     for row in profile_result.get("voucher_types", []):
-        base_type = row.get("base_voucher_type") or row.get("voucher_type_name")
+        name = row.get("voucher_type_name")
+        if not name or name in seen:
+            continue
         if row.get("count", 0) < min_count:
             continue
+        base_type = row.get("base_voucher_type") or name
         is_standard = base_type in STANDARD_BASE_VOUCHER_TYPES
         if (is_standard and not include_standard) or (not is_standard and not include_custom):
             continue
-        if base_type in seen:
-            continue
-        seen.add(base_type)
-        recommended.append(base_type)
+        seen.add(name)
+        recommended.append(name)
     return recommended
 
 
@@ -1483,6 +1759,7 @@ def sync_profiled_vouchers(
     continue_on_error: bool = False,
     adaptive: bool = True,
     min_chunk_days: int = 1,
+    voucher_progress_callback: Callable[[dict], None] | None = None,
 ) -> dict:
     profile_result = profile_vouchers_in_chunks(
         session,
@@ -1516,6 +1793,7 @@ def sync_profiled_vouchers(
                 continue_on_error=continue_on_error,
                 adaptive=adaptive,
                 min_chunk_days=min_chunk_days,
+                voucher_progress_callback=voucher_progress_callback,
             )
             results.append(
                 {

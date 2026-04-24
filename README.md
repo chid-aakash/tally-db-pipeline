@@ -804,6 +804,54 @@ Replay a saved voucher export:
 tally-db-pipeline replay-xml --kind vouchers --file /path/to/day-book.xml --company "Exact Company Name"
 ```
 
+### Ledger-Prefix-Audit
+
+Flags voucher ledger entries whose leading digit does not match the leading digit of the voucher type — for example a ledger `20E Rework Conveyances` (prefix `2`) posted inside voucher type `12 Payment` (prefix `1`). Useful for catching mispostings between parallel voucher-series (12/22/32/42/52/62/72/...).
+
+By default, it runs across all companies and filters out "shared" ledgers that naturally span every series: bank/cash (`00A %`, `00L %`), GST (`90A %`, `90L %`), and round-off (`10E Round Off%`).
+
+List all mismatches, grouped by company:
+
+```bash
+tally-db-pipeline ledger-prefix-audit
+```
+
+Count only (no per-row detail):
+
+```bash
+tally-db-pipeline ledger-prefix-audit --summary-only
+```
+
+Restrict to one company:
+
+```bash
+tally-db-pipeline ledger-prefix-audit --company "Exact Company Name"
+```
+
+Export results to CSV:
+
+```bash
+tally-db-pipeline ledger-prefix-audit --output ./ledger_prefix_mismatches.csv
+```
+
+Programmatic use from Python:
+
+```python
+from tally_db_pipeline.db import get_session
+from tally_db_pipeline.audits import find_ledger_prefix_mismatches, export_ledger_prefix_mismatches
+
+with get_session() as session:
+    rows = find_ledger_prefix_mismatches(session)                          # all companies
+    rows = find_ledger_prefix_mismatches(session, company_name="Foo Ltd")  # one company
+    export_ledger_prefix_mismatches(session, "./out.csv")                  # write CSV
+```
+
+Override the default exclusion patterns by passing your own list:
+
+```python
+find_ledger_prefix_mismatches(session, exclude_ledger_like=["00A %", "00L %"])
+```
+
 ## Common problems
 
 ### Problem: `Cannot connect to http://<host>:<port>`

@@ -54,6 +54,16 @@ def ensure_runtime_schema() -> None:
             if _needs_company_scope_rebuild(conn, table_name):
                 _rebuild_company_scoped_table(conn, table_name, columns)
 
+        inspector = inspect(conn)
+        if inspector.has_table("vouchers"):
+            voucher_cols = {c["name"] for c in inspector.get_columns("vouchers")}
+            if "alter_id" not in voucher_cols:
+                conn.execute(text("ALTER TABLE vouchers ADD COLUMN alter_id INTEGER"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_vouchers_alter_id ON vouchers (alter_id)"))
+            if "master_id" not in voucher_cols:
+                conn.execute(text("ALTER TABLE vouchers ADD COLUMN master_id INTEGER"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_vouchers_master_id ON vouchers (master_id)"))
+
 
 def _needs_company_scope_rebuild(conn, table_name: str) -> bool:
     if engine.dialect.name != "sqlite":

@@ -6,7 +6,7 @@ import os
 import re
 import time
 from pathlib import Path
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from xml.sax.saxutils import escape
 
 import requests
@@ -332,6 +332,20 @@ class TallyClient:
         )
 
     @staticmethod
+    def _date_range_filter_formula(from_date: str | None, to_date: str | None) -> str | None:
+        # NOTE: Tally's "<=" comparison against $$Date:"YYYYMMDD" is unreliable
+        # for certain dates (reproducibly fails for Feb 28 among others and
+        # drops the entire result set). Use a half-open interval instead:
+        # [from_date, to_date + 1 day).
+        parts: list[str] = []
+        if from_date:
+            parts.append(f'$Date &gt;= $$Date:"{_format_tally_report_date(from_date)}"')
+        if to_date:
+            exclusive_end = _coerce_date(to_date) + timedelta(days=1)
+            parts.append(f'$Date &lt; $$Date:"{exclusive_end.strftime("%Y%m%d")}"')
+        return " and ".join(parts) if parts else None
+
+    @staticmethod
     def build_voucher_type_collection_range_xml(
         company: str,
         voucher_type: str,
@@ -355,8 +369,21 @@ class TallyClient:
             static_variables.append(f'<SVTODATE TYPE="Date">{_xml(_format_tally_report_date(to_date))}</SVTODATE>')
 
         collection_name = "RangeVouchers"
-        childof_expr = _voucher_childof_expression(voucher_type)
+        type_filter_name = "VchTypeFilter"
+        date_filter_name = "VchDateFilter"
+        type_formula = _voucher_filter_formula(voucher_type)
+        date_formula = TallyClient._date_range_filter_formula(from_date, to_date)
+
+        filter_refs = [type_filter_name]
+        system_formulas = [(type_filter_name, type_formula)]
+        if date_formula:
+            filter_refs.append(date_filter_name)
+            system_formulas.append((date_filter_name, date_formula))
+
         fetch = "*, ALLLEDGERENTRIES.*, ALLINVENTORYENTRIES.*" if full_fetch else "Date, VoucherNumber, PartyLedgerName, PartyName, VoucherTypeName, GUID"
+        systems_xml = "".join(
+            f'<SYSTEM TYPE="Formulae" NAME="{_xml_attr(n)}">{f}</SYSTEM>' for n, f in system_formulas
+        )
         return (
             "<ENVELOPE>"
             "<HEADER>"
@@ -369,11 +396,11 @@ class TallyClient:
             f"<STATICVARIABLES>{''.join(static_variables)}</STATICVARIABLES>"
             "<TDL><TDLMESSAGE>"
             f'<COLLECTION NAME="{collection_name}" ISINITIALIZE="Yes">'
-            "<TYPE>Vouchers : VoucherType</TYPE>"
-            f"<CHILDOF>{_xml(childof_expr)}</CHILDOF>"
-            "<BELONGSTO>Yes</BELONGSTO>"
+            "<TYPE>Voucher</TYPE>"
+            f"<FILTER>{','.join(filter_refs)}</FILTER>"
             f"<FETCH>{fetch}</FETCH>"
             "</COLLECTION>"
+            f"{systems_xml}"
             "</TDLMESSAGE></TDL>"
             "</DESC></BODY>"
             "</ENVELOPE>"
@@ -402,6 +429,15 @@ class TallyClient:
             static_variables.append(f'<SVTODATE TYPE="Date">{_xml(_format_tally_report_date(to_date))}</SVTODATE>')
 
         collection_name = "RangeAllVouchers"
+        date_filter_name = "AllVchDateFilter"
+        date_formula = TallyClient._date_range_filter_formula(from_date, to_date)
+        filter_xml = f"<FILTER>{date_filter_name}</FILTER>" if date_formula else ""
+        system_xml = (
+            f'<SYSTEM TYPE="Formulae" NAME="{_xml_attr(date_filter_name)}">{date_formula}</SYSTEM>'
+            if date_formula
+            else ""
+        )
+
         fetch = "*, ALLLEDGERENTRIES.*, ALLINVENTORYENTRIES.*" if full_fetch else "Date, VoucherNumber, PartyLedgerName, PartyName, VoucherTypeName, GUID"
         return (
             "<ENVELOPE>"
@@ -416,8 +452,58 @@ class TallyClient:
             "<TDL><TDLMESSAGE>"
             f'<COLLECTION NAME="{collection_name}" ISINITIALIZE="Yes">'
             "<TYPE>Voucher</TYPE>"
+            f"{filter_xml}"
             f"<FETCH>{fetch}</FETCH>"
             "</COLLECTION>"
+            f"{system_xml}"
+            "</TDLMESSAGE></TDL>"
+            "</DESC></BODY>"
+            "</ENVELOPE>"
+        )
+
+    @staticmethod
+    def build_voucher_alterid_collection_xml(
+        company: str,
+        *,
+        since_alter_id: int,
+        upto_alter_id: int | None = None,
+        full_fetch: bool = True,
+        from_date: str = "2000-01-01",
+        to_date: str = "2099-12-31",
+    ) -> str:
+        # Incremental sync: returns every voucher with $AlterID > since_alter_id.
+        # A wide SVFROMDATE/SVTODATE is required — Tally's Voucher collection is
+        # period-scoped, and without explicit dates it silently restricts to an
+        # empty window (a single-digit result). The AlterID filter itself is
+        # date-agnostic; the period just defines the visible universe.
+        collection_name = "AlterIdVouchers"
+        filter_name = "AlterIdGtFilter"
+        formula = f"$AlterID &gt; {int(since_alter_id)}"
+        if upto_alter_id is not None:
+            formula = f"({formula}) AND ($AlterID &lt;= {int(upto_alter_id)})"
+        fetch = "*, ALLLEDGERENTRIES.*, ALLINVENTORYENTRIES.*" if full_fetch else "Date, VoucherNumber, PartyLedgerName, PartyName, VoucherTypeName, GUID, AlterID, MasterID"
+        return (
+            "<ENVELOPE>"
+            "<HEADER>"
+            "<VERSION>1</VERSION>"
+            "<TALLYREQUEST>EXPORT</TALLYREQUEST>"
+            "<TYPE>COLLECTION</TYPE>"
+            f"<ID>{collection_name}</ID>"
+            "</HEADER>"
+            "<BODY><DESC>"
+            "<STATICVARIABLES>"
+            f"<SVCURRENTCOMPANY>{_xml(company)}</SVCURRENTCOMPANY>"
+            "<SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>"
+            f'<SVFROMDATE TYPE="Date">{_xml(_format_tally_report_date(from_date))}</SVFROMDATE>'
+            f'<SVTODATE TYPE="Date">{_xml(_format_tally_report_date(to_date))}</SVTODATE>'
+            "</STATICVARIABLES>"
+            "<TDL><TDLMESSAGE>"
+            f'<COLLECTION NAME="{collection_name}" ISINITIALIZE="Yes">'
+            "<TYPE>Voucher</TYPE>"
+            f"<FILTER>{filter_name}</FILTER>"
+            f"<FETCH>{fetch}</FETCH>"
+            "</COLLECTION>"
+            f'<SYSTEM TYPE="Formulae" NAME="{_xml_attr(filter_name)}">{formula}</SYSTEM>'
             "</TDLMESSAGE></TDL>"
             "</DESC></BODY>"
             "</ENVELOPE>"

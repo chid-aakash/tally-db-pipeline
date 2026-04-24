@@ -214,6 +214,8 @@ class Voucher(Base):
     place_of_supply: Mapped[str | None] = mapped_column(String(100))
     is_cancelled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_optional: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    alter_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    master_id: Mapped[int | None] = mapped_column(Integer, index=True)
     last_synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
     inventory_entries: Mapped[list["VoucherInventoryEntry"]] = relationship(
