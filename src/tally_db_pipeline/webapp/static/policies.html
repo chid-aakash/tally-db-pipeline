@@ -1,0 +1,616 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <title>Policies — Tally Production Entry</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      margin: 0;
+      background: #f5f6f8;
+      color: #1a1f2e;
+    }
+    header {
+      background: #1f2937; color: white;
+      padding: 12px 20px;
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    header .brand { font-weight: 600; }
+    header nav a { color: #cbd5e1; margin-left: 14px; text-decoration: none; font-size: 0.95rem; }
+    header nav a:hover { color: white; }
+    main { padding: 16px 20px; max-width: 1400px; margin: 0 auto; }
+    h1 { margin: 0 0 14px; font-size: 1.35rem; }
+    .card {
+      background: white; padding: 14px; border-radius: 8px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 14px;
+    }
+    label { display: block; margin: 6px 0 3px; font-weight: 500; font-size: 0.85rem; }
+    select, input[type=text] {
+      width: 100%; padding: 7px 10px; border: 1px solid #d1d5db;
+      border-radius: 6px; font-size: 0.92rem; font-family: inherit;
+    }
+    button {
+      background: #2563eb; color: white; border: none;
+      padding: 7px 14px; border-radius: 6px; cursor: pointer;
+      font-size: 0.9rem; font-family: inherit;
+    }
+    button:hover { background: #1d4ed8; }
+    button.secondary { background: #6b7280; }
+    button.secondary:hover { background: #4b5563; }
+    button.danger { background: #dc2626; }
+    button.danger:hover { background: #b91c1c; }
+    .grid { display: grid; grid-template-columns: 360px 1fr; gap: 14px; align-items: start; }
+    .panel-head {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 8px;
+    }
+    .panel-head h2 { margin: 0; font-size: 1rem; color: #374151; }
+    .tree { max-height: 65vh; overflow-y: auto; font-size: 0.88rem; }
+    .tree-node { padding: 2px 0; }
+    .tree-row {
+      display: flex; align-items: center; gap: 6px;
+      padding: 3px 6px; border-radius: 4px; cursor: grab;
+    }
+    .tree-row:hover { background: #eef2ff; }
+    .tree-row.dragging { opacity: 0.4; }
+    .tree-caret {
+      width: 14px; display: inline-block; cursor: pointer; user-select: none;
+      color: #6b7280; font-size: 0.85rem;
+    }
+    .tree-caret.leaf { visibility: hidden; }
+    .tree-kids { padding-left: 18px; }
+    .tree-kids.collapsed { display: none; }
+    .tree-name { flex: 1; }
+    .tree-name.assigned { color: #9ca3af; text-decoration: line-through; }
+    .tree-row.foreign { cursor: pointer; }
+    .tree-row.foreign[draggable="false"] { cursor: pointer; }
+    .tree-name.foreign { color: #dc2626; font-weight: 500; }
+    .tree-name.foreign:hover { text-decoration: underline; }
+    .foreign-hint { color: #dc2626; font-size: 0.72rem; margin-left: 6px; }
+    .drop-zones { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .drop-zone {
+      background: white; border: 2px dashed #d1d5db; border-radius: 8px;
+      padding: 14px; min-height: 380px;
+    }
+    .drop-zone.consume { border-color: #f59e0b; }
+    .drop-zone.produce { border-color: #16a34a; }
+    .drop-zone.drag-over { background: #eff6ff; border-style: solid; }
+    .drop-zone h3 { margin: 0 0 8px; font-size: 1rem; }
+    .drop-zone.consume h3 { color: #b45309; }
+    .drop-zone.produce h3 { color: #166534; }
+    .chip {
+      display: flex; justify-content: space-between; align-items: center;
+      background: #f3f4f6; border-radius: 6px; padding: 6px 10px;
+      margin-bottom: 6px; font-size: 0.88rem;
+    }
+    .chip-name { font-weight: 500; }
+    .chip-godown {
+      font-size: 0.75rem; color: #6b7280; margin-left: 8px;
+    }
+    .chip input {
+      width: 150px; padding: 3px 6px; font-size: 0.78rem; margin-left: 8px;
+    }
+    .chip button.x {
+      background: transparent; color: #dc2626; padding: 0 6px; font-size: 1.1rem;
+    }
+    .chip button.x:hover { background: #fee2e2; }
+    .banner {
+      padding: 10px 12px; border-radius: 6px; margin: 10px 0;
+      border: 1px solid transparent; font-size: 0.88rem;
+    }
+    .banner-info { background: #eff6ff; border-color: #2563eb; color: #1e40af; }
+    .banner-success { background: #f0fdf4; border-color: #16a34a; color: #166534; }
+    .banner-error { background: #fef2f2; border-color: #dc2626; color: #991b1b; }
+    .muted { color: #6b7280; font-size: 0.82rem; }
+    .action-bar {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-top: 14px; padding-top: 12px; border-top: 1px solid #e5e7eb;
+    }
+    .tree-filter {
+      width: 100%; padding: 6px 10px; margin-bottom: 8px;
+      border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.88rem;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">Tally Production Entry</div>
+    <nav>
+      <a href="/app">New entry</a>
+      <a href="/entries">All entries</a>
+      <a href="/policies">Policies</a>
+    </nav>
+  </header>
+  <main>
+    <h1>Policies — Voucher Type × Stock Group mapping</h1>
+
+    <div class="card">
+      <div style="display:grid; grid-template-columns: 1fr 1fr auto; gap:12px; align-items:end">
+        <div>
+          <label>Company</label>
+          <select id="company-select"></select>
+        </div>
+        <div>
+          <label>Voucher Type (from Tally)</label>
+          <select id="vt-select">
+            <option value="">(pick a voucher type)</option>
+          </select>
+        </div>
+        <button id="load-btn">Load</button>
+      </div>
+      <div id="company-default-row" style="display:none; margin-top:12px; padding-top:10px; border-top:1px solid #e5e7eb; display:flex; align-items:flex-end; gap:10px">
+        <div style="flex:1; max-width:420px">
+          <label>Default godown for this company (auto-fills empty chips when a policy is loaded)</label>
+          <select id="company-default-godown"></select>
+        </div>
+        <button id="save-company-default" class="secondary">Save default</button>
+        <span id="company-default-status" class="muted"></span>
+      </div>
+      <div id="banner" class="muted" style="margin-top:10px">Select a company to begin.</div>
+    </div>
+
+    <div id="editor" style="display:none">
+      <div class="grid">
+        <div class="card">
+          <div class="panel-head">
+            <h2>Stock Groups</h2>
+            <span class="muted" id="tree-count"></span>
+          </div>
+          <input class="tree-filter" id="tree-filter" placeholder="Search group…">
+          <div class="tree" id="tree"></div>
+          <div class="muted" style="margin-top:8px">Drag a group onto Consume or Produce.</div>
+        </div>
+
+        <div>
+          <div class="drop-zones">
+            <div class="drop-zone consume" data-role="consume">
+              <h3>Consume (source)</h3>
+              <div id="consume-list"></div>
+              <div class="muted" id="consume-empty">Drop stock groups here</div>
+            </div>
+            <div class="drop-zone produce" data-role="produce">
+              <h3>Produce (destination)</h3>
+              <div id="produce-list"></div>
+              <div class="muted" id="produce-empty">Drop stock groups here</div>
+            </div>
+          </div>
+
+          <div class="action-bar">
+            <div>
+              <button class="danger" id="delete-btn" style="display:none">Delete policy</button>
+            </div>
+            <div>
+              <button class="secondary" id="reset-btn">Reset changes</button>
+              <button id="save-btn">Save policy</button>
+            </div>
+          </div>
+          <div id="save-banner"></div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let state = {
+  company: "",
+  voucherType: "",
+  tree: [],        // stock group tree
+  original: [],    // original group rows from the policy
+  assignments: [], // [{stock_group, role, default_godown}, ...]
+  exists: false,
+  usage: {},       // { stock_group: [{voucher_type, role}, ...] } — all policies in this company
+  godowns: [],     // [{name, parent}, ...]
+  companyDefaultGodown: "", // fallback fill for empty chips
+};
+
+const assignedGroups = () => new Set(state.assignments.map(a => a.stock_group));
+const groupRoleExists = (name, role) => state.assignments.some(a => a.stock_group === name && a.role === role);
+
+const draftKey = (company, vt) => `tdp.policy.draft::${company}::${vt}`;
+function saveDraft() {
+  if (!state.company || !state.voucherType) return;
+  localStorage.setItem(
+    draftKey(state.company, state.voucherType),
+    JSON.stringify({ assignments: state.assignments, saved_at: new Date().toISOString() })
+  );
+}
+function readDraft(company, vt) {
+  const raw = localStorage.getItem(draftKey(company, vt));
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
+}
+function clearDraft(company, vt) {
+  localStorage.removeItem(draftKey(company, vt));
+}
+
+async function fetchJSON(url, opts) {
+  const r = await fetch(url, opts);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+async function init() {
+  const d = await fetchJSON("/api/all-companies");
+  const sel = $("company-select");
+  sel.innerHTML = '<option value="">(pick a company)</option>' +
+    d.companies.map(c => `<option>${escapeHtml(c)}</option>`).join("");
+  sel.onchange = onCompanyChange;
+  $("load-btn").onclick = onLoadClick;
+  $("tree-filter").oninput = renderTree;
+  $("save-btn").onclick = savePolicy;
+  $("reset-btn").onclick = () => loadPolicy();
+  $("delete-btn").onclick = deletePolicy;
+  $("save-company-default").onclick = saveCompanyDefault;
+  $("company-default-godown").onchange = (e) => {
+    state.companyDefaultGodown = e.target.value;
+    $("company-default-status").textContent = "unsaved";
+  };
+  document.querySelectorAll(".drop-zone").forEach(z => {
+    z.addEventListener("dragover", e => { e.preventDefault(); z.classList.add("drag-over"); });
+    z.addEventListener("dragleave", () => z.classList.remove("drag-over"));
+    z.addEventListener("drop", onDrop);
+  });
+}
+
+function escapeHtml(s) {
+  return (s || "").replace(/[&<>"']/g, m => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[m]));
+}
+
+async function onCompanyChange() {
+  state.company = $("company-select").value;
+  state.assignments = [];
+  state.tree = [];
+  $("editor").style.display = "none";
+  if (!state.company) {
+    $("banner").textContent = "Select a company to begin.";
+    return;
+  }
+  $("banner").textContent = "Loading…";
+  const [vts, tree, godowns, cdg] = await Promise.all([
+    fetchJSON(`/api/tally-voucher-types?company=${encodeURIComponent(state.company)}`),
+    fetchJSON(`/api/stock-group-tree?company=${encodeURIComponent(state.company)}`),
+    fetchJSON(`/api/godowns?company=${encodeURIComponent(state.company)}`),
+    fetchJSON(`/api/company-default-godown?company=${encodeURIComponent(state.company)}`),
+  ]);
+  state.godowns = (godowns.godowns || []).filter(g => g.name);
+  state.companyDefaultGodown = cdg.default_godown || "";
+  const cdgSel = $("company-default-godown");
+  cdgSel.innerHTML = '<option value="">(none)</option>' +
+    state.godowns.map(g => `<option value="${escapeHtml(g.name)}"${g.name === state.companyDefaultGodown ? " selected" : ""}>${escapeHtml(g.name)}</option>`).join("");
+  $("company-default-row").style.display = "flex";
+  const vtSel = $("vt-select");
+  vtSel.innerHTML = '<option value="">(pick a voucher type)</option>' +
+    vts.voucher_types.map(v => {
+      const mark = v.has_policy ? " ✓" : "";
+      return `<option value="${escapeHtml(v.name)}">${escapeHtml(v.name)}${mark}</option>`;
+    }).join("");
+  state.tree = tree.tree;
+  $("tree-count").textContent = `${countNodes(tree.tree)} groups`;
+  const withPolicy = vts.voucher_types.filter(v => v.has_policy).length;
+  $("banner").textContent = vts.voucher_types.length
+    ? `${vts.voucher_types.length} voucher types synced from Tally (${withPolicy} have a policy — marked ✓).`
+    : "No voucher types synced yet. Run the Tally sync first.";
+}
+
+function countNodes(nodes) {
+  let n = 0;
+  for (const x of nodes) { n++; n += countNodes(x.children || []); }
+  return n;
+}
+
+async function onLoadClick() {
+  const vt = $("vt-select").value;
+  if (!state.company) return alert("Pick a company first");
+  if (!vt) return alert("Pick a voucher type");
+  state.voucherType = vt;
+  await loadPolicy();
+}
+
+async function loadPolicy() {
+  $("editor").style.display = "";
+  const [d, usage] = await Promise.all([
+    fetchJSON(`/api/policy?company=${encodeURIComponent(state.company)}&voucher_type=${encodeURIComponent(state.voucherType)}`),
+    fetchJSON(`/api/policy-group-usage?company=${encodeURIComponent(state.company)}`),
+  ]);
+  state.exists = d.exists;
+  state.original = d.groups || [];
+  state.usage = usage.usage || {};
+
+  // If a local draft exists for this (company, voucher_type), offer to restore.
+  const draft = readDraft(state.company, state.voucherType);
+  let restored = false;
+  if (draft && Array.isArray(draft.assignments)) {
+    const savedAt = draft.saved_at ? new Date(draft.saved_at).toLocaleString() : "";
+    if (confirm(`A local draft for "${state.voucherType}" was saved at ${savedAt}. Restore it?\n\nOK = restore draft, Cancel = discard draft and load saved policy.`)) {
+      state.assignments = draft.assignments;
+      restored = true;
+    } else {
+      clearDraft(state.company, state.voucherType);
+    }
+  }
+  if (!restored) {
+    state.assignments = (state.original || []).map(g => ({
+      stock_group: g.stock_group,
+      role: g.role,
+      default_godown: g.default_godown || "",
+    }));
+  }
+  // Auto-fill blank godowns with the company default (only the blank ones).
+  if (state.companyDefaultGodown) {
+    let filled = 0;
+    for (const a of state.assignments) {
+      if (!a.default_godown) { a.default_godown = state.companyDefaultGodown; filled++; }
+    }
+    if (filled > 0) {
+      $("save-banner").innerHTML = `<div class="banner banner-info">${filled} chip${filled === 1 ? "" : "s"} auto-filled with company default "${escapeHtml(state.companyDefaultGodown)}". Click Save to persist.</div>`;
+    }
+  }
+  $("delete-btn").style.display = state.exists ? "" : "none";
+  $("save-banner").innerHTML = restored
+    ? `<div class="banner banner-info">Restored from local draft — click Save to persist.</div>`
+    : "";
+  renderTree();
+  renderZones();
+}
+
+function foreignAssignment(name) {
+  // Returns a {voucher_type, role} for the FIRST assignment in this company
+  // that isn't the current voucher-type; null otherwise.
+  const arr = state.usage[name] || [];
+  for (const a of arr) {
+    if (a.voucher_type !== state.voucherType) return a;
+  }
+  return null;
+}
+
+async function switchToVoucherType(vt) {
+  // Stash current edits as a local draft, switch, reload.
+  saveDraft();
+  state.voucherType = vt;
+  $("vt-select").value = vt;
+  await loadPolicy();
+}
+
+function renderTree() {
+  const filter = $("tree-filter").value.trim().toLowerCase();
+  const matches = (name) => !filter || name.toLowerCase().includes(filter);
+  const hasMatchDeep = (node) => matches(node.name) || (node.children || []).some(hasMatchDeep);
+  const root = $("tree");
+  // Preserve scroll position and which groups are collapsed across re-renders.
+  const prevScroll = root.scrollTop;
+  if (!window.__collapsedSet) window.__collapsedSet = new Set();
+  const collapsedSet = window.__collapsedSet;
+  // Snapshot current DOM's collapsed state before wiping.
+  root.querySelectorAll(".tree-node").forEach(n => {
+    const nm = n.querySelector(".tree-row")?.dataset?.name;
+    const kids = n.querySelector(".tree-kids");
+    if (nm && kids) {
+      if (kids.classList.contains("collapsed")) collapsedSet.add(nm);
+      else collapsedSet.delete(nm);
+    }
+  });
+  root.innerHTML = "";
+  const render = (node, parent) => {
+    if (filter && !hasMatchDeep(node)) return;
+    const div = document.createElement("div");
+    div.className = "tree-node";
+    const row = document.createElement("div");
+    row.className = "tree-row";
+    row.dataset.name = node.name;
+    const foreign = foreignAssignment(node.name);
+    const selfAssigned = assignedGroups().has(node.name);
+    const selfRoles = state.assignments.filter(a => a.stock_group === node.name).map(a => a.role);
+    if (foreign) {
+      row.classList.add("foreign");
+      row.draggable = false;
+      row.title = `Assigned to "${foreign.voucher_type}" (${foreign.role}). Click the name to switch.`;
+    } else {
+      row.draggable = true;
+      row.addEventListener("dragstart", (e) => {
+        e.dataTransfer.setData("text/plain", node.name);
+        row.classList.add("dragging");
+      });
+      row.addEventListener("dragend", () => row.classList.remove("dragging"));
+    }
+    const caret = document.createElement("span");
+    caret.className = "tree-caret" + ((node.children || []).length ? "" : " leaf");
+    caret.textContent = (node.children || []).length ? "▾" : "•";
+    const name = document.createElement("span");
+    name.className = "tree-name";
+    if (selfAssigned) {
+      name.classList.add("assigned");
+      name.title = `Already assigned as ${selfRoles.join(", ")} on this voucher type`;
+    } else if (foreign) {
+      name.classList.add("foreign");
+      name.style.cursor = "pointer";
+      name.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (confirm(`"${node.name}" is assigned to "${foreign.voucher_type}".\n\nSwitch to that policy? Your current changes will be saved as a local draft.`)) {
+          switchToVoucherType(foreign.voucher_type);
+        }
+      });
+    }
+    name.textContent = node.name;
+    row.appendChild(caret);
+    row.appendChild(name);
+    if (foreign) {
+      const hint = document.createElement("span");
+      hint.className = "foreign-hint";
+      hint.textContent = `→ ${foreign.voucher_type}`;
+      hint.style.cursor = "pointer";
+      hint.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (confirm(`"${node.name}" is assigned to "${foreign.voucher_type}".\n\nSwitch to that policy? Your current changes will be saved as a local draft.`)) {
+          switchToVoucherType(foreign.voucher_type);
+        }
+      });
+      row.appendChild(hint);
+    }
+    div.appendChild(row);
+
+    if ((node.children || []).length) {
+      const kids = document.createElement("div");
+      kids.className = "tree-kids";
+      // Restore collapsed state (but auto-expand while a filter is active).
+      if (!filter && collapsedSet.has(node.name)) {
+        kids.classList.add("collapsed");
+      }
+      caret.onclick = (e) => {
+        e.stopPropagation();
+        kids.classList.toggle("collapsed");
+        if (kids.classList.contains("collapsed")) collapsedSet.add(node.name);
+        else collapsedSet.delete(node.name);
+      };
+      for (const c of node.children) render(c, kids);
+      div.appendChild(kids);
+    }
+    parent.appendChild(div);
+  };
+  for (const n of state.tree) render(n, root);
+  root.scrollTop = prevScroll;
+}
+
+function onDrop(e) {
+  e.preventDefault();
+  e.currentTarget.classList.remove("drag-over");
+  const name = e.dataTransfer.getData("text/plain");
+  if (!name) return;
+  if (foreignAssignment(name)) {
+    alert(`"${name}" is already assigned to another voucher type. Remove it there first.`);
+    return;
+  }
+  const role = e.currentTarget.dataset.role;
+  if (groupRoleExists(name, role)) {
+    alert(`"${name}" is already in ${role}. Click the + next to the chip to add it again with a different godown.`);
+    return;
+  }
+  state.assignments.push({ stock_group: name, role, default_godown: "" });
+  saveDraft();
+  renderTree();
+  renderZones();
+}
+
+function renderZones() {
+  const godownOptions = (selected) =>
+    '<option value="">(pick godown)</option>' +
+    state.godowns.map(g =>
+      `<option value="${escapeHtml(g.name)}"${g.name === selected ? " selected" : ""}>${escapeHtml(g.name)}</option>`
+    ).join("");
+  for (const role of ["consume", "produce"]) {
+    const list = $(`${role}-list`);
+    list.innerHTML = "";
+    // Build sorted index list for this role.
+    const indexed = state.assignments
+      .map((a, idx) => ({ a, idx }))
+      .filter(({ a }) => a.role === role)
+      .sort((x, y) => x.a.stock_group.localeCompare(y.a.stock_group));
+    $(`${role}-empty`).style.display = indexed.length ? "none" : "";
+    for (const { a, idx } of indexed) {
+      const chip = document.createElement("div");
+      chip.className = "chip";
+      chip.innerHTML = `
+        <span class="chip-name">${escapeHtml(a.stock_group)}</span>
+        <span style="display:flex; align-items:center; gap:4px">
+          <select onchange="onGodown(${idx}, this.value)">${godownOptions(a.default_godown || "")}</select>
+          <button class="x" title="Duplicate with a different godown" onclick="duplicateAssign(${idx})" style="color:#2563eb">＋</button>
+          <button class="x" title="Remove" onclick="removeAssign(${idx})">×</button>
+        </span>
+      `;
+      list.appendChild(chip);
+    }
+  }
+}
+
+window.onGodown = (idx, val) => {
+  if (state.assignments[idx]) state.assignments[idx].default_godown = val;
+  saveDraft();
+};
+window.removeAssign = (idx) => {
+  state.assignments.splice(idx, 1);
+  saveDraft();
+  renderTree();
+  renderZones();
+};
+window.duplicateAssign = (idx) => {
+  const src = state.assignments[idx];
+  if (!src) return;
+  state.assignments.push({ stock_group: src.stock_group, role: src.role, default_godown: "" });
+  saveDraft();
+  renderZones();
+};
+
+async function savePolicy() {
+  const groups = state.assignments.map(a => ({
+    stock_group: a.stock_group, role: a.role, default_godown: a.default_godown || null,
+  }));
+  if (!groups.length) {
+    if (!confirm("Save with no groups? The policy will be effectively empty.")) return;
+  }
+  $("save-banner").innerHTML = "";
+  try {
+    const r = await fetchJSON("/api/policy", {
+      method: "PUT",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        company: state.company,
+        voucher_type: state.voucherType,
+        strict: true,
+        rate_policy: "stock_master",
+        active: true,
+        groups,
+      }),
+    });
+    state.exists = true;
+    $("delete-btn").style.display = "";
+    clearDraft(state.company, state.voucherType);
+    // Refresh usage map so newly-saved groups mark correctly when switching voucher types next time.
+    const usage = await fetchJSON(`/api/policy-group-usage?company=${encodeURIComponent(state.company)}`);
+    state.usage = usage.usage || {};
+    renderTree();
+    $("save-banner").innerHTML = `<div class="banner banner-success">Saved ${escapeHtml(r.voucher_type)} with ${r.group_count} group${r.group_count === 1 ? "" : "s"}.</div>`;
+  } catch (e) {
+    $("save-banner").innerHTML = `<div class="banner banner-error">Save failed: ${escapeHtml(String(e))}</div>`;
+  }
+}
+
+async function saveCompanyDefault() {
+  try {
+    const r = await fetchJSON("/api/company-default-godown", {
+      method: "PUT",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ company: state.company, default_godown: state.companyDefaultGodown || null }),
+    });
+    $("company-default-status").textContent = r.default_godown ? `saved: ${r.default_godown}` : "cleared";
+  } catch (e) {
+    $("company-default-status").textContent = "save failed";
+  }
+}
+
+async function deletePolicy() {
+  if (!confirm(`Delete policy "${state.voucherType}"? This cannot be undone.`)) return;
+  try {
+    await fetchJSON(
+      `/api/policy?company=${encodeURIComponent(state.company)}&voucher_type=${encodeURIComponent(state.voucherType)}`,
+      { method: "DELETE" }
+    );
+    $("save-banner").innerHTML = `<div class="banner banner-info">Deleted.</div>`;
+    state.assignments = [];
+    state.exists = false;
+    $("delete-btn").style.display = "none";
+    renderTree();
+    renderZones();
+  } catch (e) {
+    $("save-banner").innerHTML = `<div class="banner banner-error">Delete failed: ${escapeHtml(String(e))}</div>`;
+  }
+}
+
+init();
+</script>
+</body>
+</html>

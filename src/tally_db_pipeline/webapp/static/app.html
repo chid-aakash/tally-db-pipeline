@@ -1,0 +1,1020 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>Production Entry (React)</title>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      margin: 0;
+      background: #f5f6f8;
+      color: #1a1f2e;
+    }
+    header {
+      background: #1f2937;
+      color: white;
+      padding: 14px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    header .brand { font-weight: 600; }
+    header nav a, header nav button {
+      color: #cbd5e1; text-decoration: none; margin-left: 16px;
+      background: none; border: none; cursor: pointer; font-size: 1rem; font-family: inherit;
+    }
+    header nav a:hover, header nav button:hover { color: white; }
+    header nav a { margin-left: 16px; color: #cbd5e1; text-decoration: none; }
+    .tally-status {
+      display: inline-flex; align-items: center; gap: 6px;
+      margin-left: 12px; padding: 3px 10px; border-radius: 12px;
+      font-size: 0.78rem; font-weight: 500; vertical-align: middle;
+    }
+    .tally-status.ok { background: #065f46; color: #d1fae5; }
+    .tally-status.bad { background: #7f1d1d; color: #fee2e2; }
+    .tally-status.pending { background: #374151; color: #cbd5e1; }
+    .tally-status .dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: currentColor; display: inline-block;
+    }
+    .tally-status.ok .dot { animation: pulse 2.5s infinite; }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+    main { padding: 20px; max-width: 1100px; margin: 0 auto; }
+    h1 { margin-top: 0; font-size: 1.4rem; }
+    h2 { font-size: 1.1rem; margin: 0; color: #374151; }
+    .card {
+      background: white;
+      padding: 18px;
+      border-radius: 8px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+      margin-bottom: 14px;
+    }
+    .card-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 10px;
+    }
+    label { display: block; margin: 8px 0 3px; font-weight: 500; font-size: 0.88rem; }
+    input, select, textarea {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      font-size: 0.95rem;
+      font-family: inherit;
+    }
+    input[type=number] { text-align: right; }
+    button, .btn {
+      display: inline-block;
+      background: #2563eb;
+      color: white;
+      border: none;
+      padding: 9px 18px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.95rem;
+      font-family: inherit;
+    }
+    button:hover { background: #1d4ed8; }
+    .btn-secondary { background: #6b7280; }
+    .btn-secondary:hover { background: #4b5563; }
+    .btn-success { background: #16a34a; }
+    .btn-success:hover { background: #15803d; }
+    .btn-danger { background: #dc2626; }
+    .btn-danger:hover { background: #b91c1c; }
+    .btn-plus {
+      background: #e0e7ff; color: #3730a3; font-weight: 600;
+      padding: 6px 14px; font-size: 0.88rem;
+    }
+    .btn-plus:hover { background: #c7d2fe; }
+    .btn-small { padding: 4px 10px; font-size: 0.85rem; }
+    .row-grid {
+      display: grid;
+      grid-template-columns: 3fr 100px 80px 2fr 32px;
+      gap: 8px;
+      align-items: center;
+      padding: 8px 0;
+      border-bottom: 1px dashed #e5e7eb;
+    }
+    .row-grid:last-child { border-bottom: none; }
+    .row-grid .remove {
+      background: #fee2e2; color: #991b1b;
+      border: none; border-radius: 4px; width: 28px; height: 28px;
+      cursor: pointer; font-weight: bold;
+    }
+    .row-grid .remove:hover { background: #fecaca; }
+    .muted { color: #6b7280; font-size: 0.85rem; }
+    .group-title { font-size: 1.05rem; font-weight: 700; color: #111827; }
+    .cascading-row {
+      padding: 12px;
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+      margin: 10px 0;
+      background: #f9fafb;
+    }
+    .cascade-selects {
+      display: flex; flex-wrap: wrap; gap: 8px;
+      margin-bottom: 8px;
+    }
+    .cascade-selects select { flex: 1 1 160px; min-width: 140px; }
+    .cascade-selects select.item-select { flex: 3 1 320px; min-width: 260px; font-weight: 500; }
+    .cascade-inputs {
+      display: flex; gap: 8px; align-items: center;
+    }
+    .cascade-inputs input.qty-input { flex: 0 0 100px; width: 100px; }
+    .cascade-inputs input.uom-input { flex: 0 0 65px; width: 65px; text-align: center; }
+    .cascade-inputs input.rate-input { flex: 0 0 100px; width: 100px; }
+    .cascade-inputs input.narr-input { flex: 1 1 auto; min-width: 0; }
+    .cascade-inputs .remove {
+      background: #fee2e2; color: #991b1b;
+      border: none; border-radius: 4px; width: 32px; height: 32px;
+      cursor: pointer; font-weight: bold; flex: 0 0 32px;
+    }
+    .cascade-inputs .remove:hover { background: #fecaca; }
+    .tree-node {
+      border-left: 2px solid transparent;
+      padding: 6px 0 6px 8px;
+    }
+    .tree-node.depth-0 {
+      background: #f9fafb;
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+      padding: 10px 14px;
+      margin: 10px 0;
+    }
+    .tree-node.depth-1 { border-left-color: #c7d2fe; margin: 6px 0; }
+    .tree-node.depth-2 { border-left-color: #a5b4fc; margin: 4px 0; }
+    .tree-node.depth-3 { border-left-color: #818cf8; margin: 4px 0; }
+    .tree-header {
+      display: flex; align-items: center; gap: 8px;
+    }
+    .tree-toggle {
+      background: transparent; color: #6b7280; padding: 2px 4px;
+      font-size: 0.9rem; width: 22px; text-align: center;
+      border: none; cursor: pointer;
+    }
+    .tree-toggle:hover:not(:disabled) { color: #1f2937; }
+    .tree-toggle:disabled { cursor: default; opacity: 0.4; }
+    .tree-title-block { flex: 1; }
+    .tree-title { font-weight: 600; color: #1f2937; font-size: 0.95rem; }
+    .tree-node.depth-0 > .tree-header .tree-title { font-size: 1rem; }
+    .tree-rows { margin-left: 30px; margin-top: 6px; padding-bottom: 4px; }
+    .tree-children { margin-top: 2px; }
+    .status-badge {
+      display: inline-block; padding: 3px 12px; border-radius: 12px;
+      font-size: 0.8rem; font-weight: 500; margin-left: 8px;
+    }
+    .status-draft { background: #e5e7eb; color: #374151; }
+    .status-submitted { background: #dbeafe; color: #1e40af; }
+    .status-posted { background: #dcfce7; color: #166534; }
+    .status-failed { background: #fee2e2; color: #991b1b; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e5e7eb; font-size: 0.9rem; }
+    th { background: #f9fafb; font-weight: 600; }
+    .actions-bar { display: flex; justify-content: space-between; gap: 10px; margin-top: 16px; }
+    .banner {
+      padding: 14px 18px; border-radius: 8px; margin-bottom: 14px;
+      border-left: 4px solid;
+    }
+    .banner-success { background: #f0fdf4; border-color: #16a34a; color: #166534; }
+    .banner-error { background: #fef2f2; border-color: #dc2626; color: #991b1b; }
+    .banner-info { background: #eff6ff; border-color: #2563eb; color: #1e40af; }
+    .banner pre { margin: 8px 0 0; font-size: 0.8rem; background: #ffffff80; padding: 8px; border-radius: 4px; overflow-x: auto; }
+    .staging-wrap { display: grid; grid-template-columns: 200px 1fr; gap: 18px; align-items: start; }
+    .staging-menu {
+      background: white; border-radius: 8px; padding: 10px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06); position: sticky; top: 12px;
+    }
+    .staging-menu button {
+      display: block; width: 100%; text-align: left; background: transparent; color: #1a1f2e;
+      padding: 9px 12px; margin: 2px 0; border-radius: 6px; font-size: 0.92rem; font-weight: 500;
+    }
+    .staging-menu button:hover { background: #eef2ff; color: #1a1f2e; }
+    .staging-menu button.active { background: #4f46e5; color: white; }
+    .staging-menu .menu-label {
+      font-size: 0.72rem; text-transform: uppercase; color: #6b7280;
+      letter-spacing: 0.06em; padding: 6px 12px 4px; font-weight: 600;
+    }
+    .edu-hint {
+      margin-top: 6px; padding: 10px 12px;
+      background: #fef3c7; border-left: 4px solid #f59e0b; color: #78350f;
+      border-radius: 4px; font-size: 0.88rem; line-height: 1.4;
+    }
+    .spinner {
+      display: inline-block; width: 16px; height: 16px;
+      border: 2px solid #cbd5e1; border-top-color: #2563eb;
+      border-radius: 50%; animation: spin 0.7s linear infinite;
+      vertical-align: middle;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useCallback, useMemo } = React;
+
+const API = {
+  async get(url) {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+    return r.json();
+  },
+  async post(url, body) {
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+    return r.json();
+  },
+};
+
+function today() {
+  const d = new Date();
+  return d.toISOString().slice(0, 10);
+}
+
+function uid() {
+  return Math.random().toString(36).slice(2, 10);
+}
+
+// Tally Educational Mode allows voucher creation only on the 1st, 2nd, or last day of a month.
+function isTallyEduDate(isoDate) {
+  if (!isoDate) return true;
+  const [y, m, d] = isoDate.split("-").map(Number);
+  if (!y || !m || !d) return true;
+  if (d === 1 || d === 2) return true;
+  // Last day of the month: construct the 0th day of next month
+  const last = new Date(y, m, 0).getDate();
+  return d === last;
+}
+
+// ---------- Home screen ----------
+function Home({ onStart }) {
+  const [companies, setCompanies] = useState([]);
+  const [company, setCompany] = useState("");
+  const [voucherTypes, setVoucherTypes] = useState([]);
+  const [voucherType, setVoucherType] = useState("");
+  const [entryDate, setEntryDate] = useState(today());
+  const [narration, setNarration] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    API.get("/api/companies").then((d) => {
+      setCompanies(d.companies);
+      if (d.companies[0]) setCompany(d.companies[0]);
+      setLoading(false);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!company) return;
+    API.get(`/api/voucher-types?company=${encodeURIComponent(company)}`).then((d) => {
+      setVoucherTypes(d.voucher_types);
+      if (d.voucher_types[0]) setVoucherType(d.voucher_types[0].voucher_type);
+    });
+  }, [company]);
+
+  if (loading) return <p>Loading…</p>;
+
+  return (
+    <>
+      <h1>Start a new production entry</h1>
+      <div className="card">
+        <label>Company</label>
+        <select value={company} onChange={(e) => setCompany(e.target.value)}>
+          {companies.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+
+        <label>Date</label>
+        <input type="date" value={entryDate} onChange={(e) => setEntryDate(e.target.value)} />
+
+        <label>Voucher type (sheet / category)</label>
+        <select value={voucherType} onChange={(e) => setVoucherType(e.target.value)}>
+          {voucherTypes.map((v) => (
+            <option key={v.voucher_type} value={v.voucher_type}>
+              {v.voucher_type}{v.description ? ` — ${v.description}` : ""}
+            </option>
+          ))}
+        </select>
+
+        <label>Narration (optional)</label>
+        <textarea
+          rows="2"
+          value={narration}
+          onChange={(e) => setNarration(e.target.value)}
+          placeholder="e.g. Daily grinding-wheel consumption — Line A"
+        />
+
+        <div style={{ marginTop: 16 }}>
+          <button
+            disabled={!company || !voucherType}
+            onClick={() => onStart({ company, entryDate, voucherType, narration })}
+          >
+            Open entry form →
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ---------- Entry screen ----------
+function nodeAtPath(tree, path) {
+  let n = tree;
+  for (const step of path) {
+    if (!n.children) return null;
+    n = n.children.find((c) => c.stock_group === step);
+    if (!n) return null;
+  }
+  return n;
+}
+
+function CascadingRow({ tree, row, onChange, onRemove }) {
+  // Build the list of dropdowns to render. Each dropdown represents one level
+  // of the path. After the selection at level i, we show level i+1 if the
+  // selected node has children; otherwise we show the item dropdown.
+  const dropdowns = [];
+  let cursor = tree;
+  for (let i = 0; i < row.path.length + 1; i++) {
+    if (!cursor.children || cursor.children.length === 0) break;
+    const selected = row.path[i] || "";
+    dropdowns.push({ level: i, options: cursor.children, selected });
+    if (!selected) break;
+    const next = cursor.children.find((c) => c.stock_group === selected);
+    if (!next) break;
+    cursor = next;
+  }
+
+  const atLeaf = !cursor.children || cursor.children.length === 0;
+  const leafItems = atLeaf ? cursor.items : [];
+
+  const setPath = (levelIdx, value) => {
+    const newPath = row.path.slice(0, levelIdx);
+    if (value) newPath.push(value);
+    onChange({ ...row, path: newPath, subgroup: newPath[newPath.length - 1] || row.stock_group, item_name: "" });
+  };
+
+  return (
+    <div className="cascading-row">
+      <div className="cascade-selects">
+        {dropdowns.map((d) => (
+          <select
+            key={d.level}
+            value={d.selected}
+            onChange={(e) => setPath(d.level, e.target.value)}
+          >
+            <option value="">— select —</option>
+            {d.options.map((c) => (
+              <option key={c.stock_group} value={c.stock_group}>
+                {c.stock_group} ({c.items.length})
+              </option>
+            ))}
+          </select>
+        ))}
+        {atLeaf && (
+          <select
+            className="item-select"
+            value={row.item_name}
+            onChange={(e) => {
+              const it = leafItems.find((x) => x.name === e.target.value);
+              onChange({
+                ...row,
+                item_name: e.target.value,
+                uom: it ? it.uom : row.uom,
+                rate: it && it.rate ? it.rate : row.rate,
+              });
+            }}
+          >
+            <option value="">— pick item —</option>
+            {leafItems.map((it) => (
+              <option key={it.name} value={it.name}>
+                {it.name} (stock: {it.opening_stock})
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+      <div className="cascade-inputs">
+        <input
+          className="qty-input"
+          type="number"
+          step="any"
+          placeholder="qty"
+          value={row.quantity}
+          onChange={(e) => onChange({ ...row, quantity: e.target.value })}
+        />
+        <input
+          className="uom-input"
+          type="text"
+          value={row.uom || ""}
+          onChange={(e) => onChange({ ...row, uom: e.target.value })}
+          placeholder="uom"
+        />
+        <input
+          className="rate-input"
+          type="number"
+          step="any"
+          placeholder="rate"
+          value={row.rate || ""}
+          onChange={(e) => onChange({ ...row, rate: e.target.value })}
+          title={!row.rate || parseFloat(row.rate) === 0 ? "Tally may reject zero-rate stock-journal lines. Set a rate manually if the item has no prior valuation." : ""}
+          style={!row.rate || parseFloat(row.rate) === 0 ? { background: "#fef3c7", borderColor: "#f59e0b" } : {}}
+        />
+        <input
+          className="narr-input"
+          type="text"
+          placeholder="description (optional)"
+          value={row.narration || ""}
+          onChange={(e) => onChange({ ...row, narration: e.target.value })}
+        />
+        <button className="remove" onClick={onRemove} title="Remove">×</button>
+      </div>
+    </div>
+  );
+}
+
+function GroupCard({ group, rows, setRows, role, godowns, company }) {
+  // Godown resolution order (no policy dependency after the first miss):
+  //   1. policy default_godown
+  //   2. last-picked godown for this (company, group) saved in localStorage
+  //   3. a godown named like "Main" / "Main Store" / "Main Stores"
+  //   4. the only godown, if there is just one
+  const lsKey = `tdp.godown::${company}::${group.stock_group}`;
+  const pickAuto = () => {
+    if (group.default_godown) return group.default_godown;
+    const saved = localStorage.getItem(lsKey);
+    if (saved && godowns.some((g) => g.name === saved)) return saved;
+    const mainHit = godowns.find((g) => /\bmain\b/i.test(g.name));
+    if (mainHit) return mainHit.name;
+    if (godowns.length === 1) return godowns[0].name;
+    return "";
+  };
+  const [godown, setGodown] = useState(pickAuto);
+  const addRow = () => {
+    setRows((prev) => [
+      ...prev,
+      {
+        clientId: uid(),
+        role,
+        stock_group: group.stock_group,
+        subgroup: group.stock_group,
+        path: [],
+        item_name: "",
+        quantity: "",
+        uom: "",
+        narration: "",
+        godown: godown || "",
+      },
+    ]);
+  };
+  const updateRow = (clientId, newRow) =>
+    setRows((prev) => prev.map((r) => (r.clientId === clientId ? newRow : r)));
+  const removeRow = (clientId) =>
+    setRows((prev) => prev.filter((r) => r.clientId !== clientId));
+
+  const cardRows = rows.filter(
+    (r) => r.role === role && r.stock_group === group.stock_group
+  );
+
+  const onGodownChange = (val) => {
+    setGodown(val);
+    if (val) localStorage.setItem(lsKey, val);
+    // Cascade to every existing row in this card so the operator picks once.
+    setRows((prev) =>
+      prev.map((r) =>
+        r.role === role && r.stock_group === group.stock_group ? { ...r, godown: val } : r
+      )
+    );
+  };
+
+  return (
+    <div className="card">
+      <div className="card-header">
+        <div style={{ flex: 1 }}>
+          <div className="group-title">{group.stock_group}</div>
+          <div className="muted" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <span>{group.tree.items.length} items available</span>
+            <span>•</span>
+            <span>Godown:</span>
+            <b style={{ color: godown ? "#111827" : "#dc2626" }}>
+              {godown || "(none set — fix in Policies)"}
+            </b>
+          </div>
+        </div>
+        <button className="btn-plus btn-small" onClick={addRow}>+ Add item</button>
+      </div>
+
+      {cardRows.length === 0 ? (
+        <div className="muted" style={{ padding: "10px 0" }}>
+          No items added yet. Click <b>+ Add item</b> above.
+        </div>
+      ) : (
+        cardRows.map((r) => (
+          <CascadingRow
+            key={r.clientId}
+            tree={group.tree}
+            row={r}
+            onChange={(nr) => updateRow(r.clientId, nr)}
+            onRemove={() => removeRow(r.clientId)}
+          />
+        ))
+      )}
+    </div>
+  );
+}
+
+function Entry({ header, onSubmit, onBack }) {
+  const [groups, setGroups] = useState([]);
+  const [godowns, setGodowns] = useState([]);
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    setLoading(true);
+    Promise.all([
+      API.get(
+        `/api/groups?company=${encodeURIComponent(header.company)}` +
+        `&voucher_type=${encodeURIComponent(header.voucherType)}&role=consume`
+      ),
+      API.get(`/api/godowns?company=${encodeURIComponent(header.company)}`),
+    ])
+      .then(([g, gd]) => {
+        setGroups(g.groups);
+        setGodowns((gd.godowns || []).filter((x) => x.name));
+        setLoading(false);
+      })
+      .catch((e) => {
+        setError(String(e));
+        setLoading(false);
+      });
+  }, [header.company, header.voucherType]);
+
+  if (loading) return <p><span className="spinner"></span> Loading policy…</p>;
+  if (error) return <div className="banner banner-error">Failed: {error}</div>;
+
+  const validRows = rows.filter(
+    (r) => r.item_name && parseFloat(r.quantity) > 0
+  );
+
+  const handleSubmit = () => {
+    if (validRows.length === 0) {
+      alert("Please add at least one item with a quantity.");
+      return;
+    }
+    onSubmit(validRows);
+  };
+
+  return (
+    <>
+      <h1>
+        {header.voucherType}
+        <span className="status-badge status-draft">draft</span>
+      </h1>
+      <div className="muted" style={{ marginBottom: 14 }}>
+        {header.company} • Date: {header.entryDate}
+      </div>
+
+      {groups.length === 0 && (
+        <div className="banner banner-info">
+          This voucher type has no consume groups in its policy.
+        </div>
+      )}
+
+      {groups.map((g) => (
+        <GroupCard key={g.stock_group} group={g} rows={rows} setRows={setRows} role="consume" godowns={godowns} company={header.company} />
+      ))}
+
+      <div className="actions-bar">
+        <button className="btn-secondary" onClick={onBack}>← Back</button>
+        <button onClick={handleSubmit}>Review {validRows.length} item{validRows.length === 1 ? "" : "s"} →</button>
+      </div>
+    </>
+  );
+}
+
+// ---------- Summary screen (save as draft) ----------
+function Summary({ header, rows, onSaved, onBack }) {
+  const [voucherNarration, setVoucherNarration] = useState(header.narration || "");
+  const [saving, setSaving] = useState(false);
+  const [saveResult, setSaveResult] = useState(null);
+  const [error, setError] = useState(null);
+
+  const handleSave = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const created = await API.post("/api/entries", {
+        company: header.company,
+        entry_date: header.entryDate,
+        voucher_type: header.voucherType,
+        narration: voucherNarration || null,
+        lines: rows.map((r) => ({
+          role: r.role,
+          item_name: r.item_name,
+          quantity: parseFloat(r.quantity),
+          uom: r.uom || null,
+          rate: r.rate ? parseFloat(r.rate) : null,
+          godown: r.godown || null,
+          narration: r.narration || null,
+        })),
+      });
+      setSaveResult(created);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <>
+      <h1>Review &amp; save draft</h1>
+      <div className="muted" style={{ marginBottom: 14 }}>
+        {header.company} • {header.voucherType} • {header.entryDate}
+      </div>
+
+      {saveResult && (
+        <div className="banner banner-success">
+          <strong>✓ Saved as draft</strong> — Entry #{saveResult.id}
+          <div style={{ marginTop: 8 }}>
+            Add another voucher to this date's batch, or go to Staging to publish.
+          </div>
+        </div>
+      )}
+      {error && (
+        <div className="banner banner-error">
+          <strong>Save failed</strong>
+          <pre>{error}</pre>
+        </div>
+      )}
+
+      {rows.some((r) => !r.rate || parseFloat(r.rate) === 0) && !saveResult && (
+        <div className="banner banner-error" style={{ background: "#fef3c7", borderColor: "#f59e0b", color: "#92400e" }}>
+          <strong>⚠ Some items have zero rate.</strong> Tally silently rejects stock-journal lines
+          with no cost basis. Go back and enter a rate for each item before saving/publishing.
+        </div>
+      )}
+
+      <div className="card">
+        <h2>Items to consume ({rows.length})</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Item</th>
+              <th>Sub-group</th>
+              <th style={{ textAlign: "right" }}>Qty</th>
+              <th>UOM</th>
+              <th style={{ textAlign: "right" }}>Rate</th>
+              <th style={{ textAlign: "right" }}>Amount</th>
+              <th>Description (per-item)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => {
+              const qty = parseFloat(r.quantity) || 0;
+              const rate = parseFloat(r.rate) || 0;
+              const amount = qty * rate;
+              const zero = rate === 0;
+              return (
+                <tr key={r.clientId} style={zero ? { background: "#fef3c7" } : {}}>
+                  <td>{r.item_name}</td>
+                  <td>{r.subgroup && r.subgroup !== r.stock_group ? r.subgroup : r.stock_group}</td>
+                  <td style={{ textAlign: "right" }}>{r.quantity}</td>
+                  <td>{r.uom}</td>
+                  <td style={{ textAlign: "right" }}>{zero ? <span style={{ color: "#b45309" }}>0 ⚠</span> : rate.toFixed(2)}</td>
+                  <td style={{ textAlign: "right" }}>{amount.toFixed(2)}</td>
+                  <td>{r.narration || <span className="muted">—</span>}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="card">
+        <label htmlFor="voucher-narration"><b>Narration for this voucher</b> (applies to the whole {header.voucherType})</label>
+        <textarea
+          id="voucher-narration"
+          rows="3"
+          value={voucherNarration}
+          onChange={(e) => setVoucherNarration(e.target.value)}
+          placeholder="e.g. Daily grinding-wheel consumption — Line A"
+          disabled={!!saveResult}
+        />
+      </div>
+
+      <div className="actions-bar">
+        {!saveResult ? (
+          <>
+            <button className="btn-secondary" onClick={onBack} disabled={saving}>← Back to edit</button>
+            <button className="btn-success" onClick={handleSave} disabled={saving}>
+              {saving && <span className="spinner"></span>}
+              {saving ? " Saving…" : "Save as draft"}
+            </button>
+          </>
+        ) : (
+          <>
+            <button className="btn-secondary" onClick={() => onSaved({ goToStaging: false })}>+ Add another voucher</button>
+            <button onClick={() => onSaved({ goToStaging: true })}>Go to Staging →</button>
+          </>
+        )}
+      </div>
+    </>
+  );
+}
+
+// ---------- Staging (publish all drafts) ----------
+function Staging({ company, entryDate, onBack }) {
+  const [drafts, setDrafts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [publishing, setPublishing] = useState(false);
+  const [results, setResults] = useState({}); // entryId -> result
+
+  // Load ALL drafts for this date (across every company), so a user who
+  // created entries under multiple companies sees all of them here.
+  const reload = useCallback(() => {
+    setLoading(true);
+    API.get(
+      `/api/entries?entry_date=${encodeURIComponent(entryDate)}&status=draft&limit=500`
+    ).then((d) => {
+      setDrafts(d.entries);
+      setLoading(false);
+    });
+  }, [entryDate]);
+
+  useEffect(() => {
+    reload();
+  }, [reload]);
+
+  const publishAll = async () => {
+    setPublishing(true);
+    const next = { ...results };
+    for (const d of drafts) {
+      if (next[d.id] && next[d.id].status === "posted") continue;
+      next[d.id] = { status: "posting" };
+      setResults({ ...next });
+      try {
+        const posted = await API.post(`/api/entries/${d.id}/post`);
+        next[d.id] = posted;
+      } catch (e) {
+        next[d.id] = { status: "failed", tally_error: String(e) };
+      }
+      setResults({ ...next });
+    }
+    setPublishing(false);
+    reload();
+  };
+
+  const postedCount = drafts.filter((d) => results[d.id]?.status === "posted").length;
+  const failedCount = drafts.filter((d) => results[d.id]?.status === "failed").length;
+
+  return (
+    <>
+      <h1>Staging — ready to publish</h1>
+      <div className="muted" style={{ marginBottom: 14 }}>
+        All companies • Date: {entryDate}
+      </div>
+
+      {loading ? (
+        <p><span className="spinner"></span> Loading drafts…</p>
+      ) : drafts.length === 0 ? (
+        <div className="card">
+          <p className="muted">No draft entries for this date. Go back and create one.</p>
+          <button className="btn-secondary" onClick={onBack}>← Back</button>
+        </div>
+      ) : (
+        <>
+          <div style={{ marginBottom: 10 }} className="muted">
+            {drafts.length} draft{drafts.length === 1 ? "" : "s"}
+            {(postedCount > 0 || failedCount > 0) && (
+              <> • Posted: {postedCount} • Failed: {failedCount}</>
+            )}
+          </div>
+
+          {(() => {
+            const byCompany = {};
+            for (const d of drafts) {
+              (byCompany[d.company] ||= []).push(d);
+            }
+            return Object.keys(byCompany).sort().map((co) => (
+              <div key={co}>
+                <h2 style={{ margin: "18px 0 6px", fontSize: "1rem", color: "#1e3a8a" }}>
+                  {co} <span className="muted" style={{ fontSize: "0.85rem", fontWeight: 400 }}>· {byCompany[co].length} draft{byCompany[co].length === 1 ? "" : "s"}</span>
+                </h2>
+                {byCompany[co].map((d) => {
+            const r = results[d.id];
+            const status = r ? r.status : d.status;
+            return (
+              <div className="card" key={d.id}>
+                <div className="card-header">
+                  <div>
+                    <div className="group-title">
+                      #{d.id} — {d.voucher_type}
+                    </div>
+                    <div className="muted">
+                      {d.lines.length} item{d.lines.length === 1 ? "" : "s"}
+                      {d.narration && <> • Narration: <i>{d.narration}</i></>}
+                    </div>
+                  </div>
+                  <div>
+                    <span className={`status-badge status-${status}`}>{status}</span>
+                    {r && r.status === "posted" && r.tally_voucher_number && (
+                      <span className="muted"> • VCH #{r.tally_voucher_number}</span>
+                    )}
+                  </div>
+                </div>
+
+                <table>
+                  <thead>
+                    <tr>
+                      <th style={{ width: 30 }}>#</th>
+                      <th>Item</th>
+                      <th style={{ width: 80, textAlign: "right" }}>Qty</th>
+                      <th style={{ width: 60 }}>UOM</th>
+                      <th style={{ width: 100, textAlign: "right" }}>Rate</th>
+                      <th style={{ width: 110, textAlign: "right" }}>Amount</th>
+                      <th>Godown</th>
+                      <th>Description</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {d.lines.map((l, i) => (
+                      <tr key={l.id}>
+                        <td>{i + 1}</td>
+                        <td>{l.item_name}</td>
+                        <td style={{ textAlign: "right" }}>{l.quantity}</td>
+                        <td>{l.uom}</td>
+                        <td style={{ textAlign: "right" }}>{l.rate ? l.rate.toFixed(2) : ""}</td>
+                        <td style={{ textAlign: "right" }}>{l.amount ? l.amount.toFixed(2) : ""}</td>
+                        <td>{l.godown || <span className="muted">—</span>}</td>
+                        <td>{l.description || <span className="muted">—</span>}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+
+                {r && r.status === "failed" && (
+                  <div className="banner banner-error" style={{ marginTop: 10 }}>
+                    <strong>Failed:</strong>
+                    <pre>{r.tally_error}</pre>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+              </div>
+            ));
+          })()}
+
+          <div className="actions-bar">
+            <button className="btn-secondary" onClick={onBack} disabled={publishing}>← Back</button>
+            <button
+              className="btn-success"
+              onClick={publishAll}
+              disabled={publishing || drafts.length === 0}
+            >
+              {publishing && <span className="spinner"></span>}
+              {publishing ? " Publishing…" : `Publish All (${drafts.length})`}
+            </button>
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
+// ---------- Tally connectivity badge ----------
+function TallyStatusBadge() {
+  const [status, setStatus] = useState({ state: "pending" });
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const r = await fetch("/api/tally-status", { cache: "no-store" });
+        const d = await r.json();
+        if (cancelled) return;
+        setStatus({ state: d.ok ? "ok" : "bad", ...d });
+      } catch (e) {
+        if (cancelled) return;
+        setStatus({ state: "bad", error: String(e) });
+      }
+    };
+    poll();
+    const t = setInterval(poll, 15000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, []);
+  const label =
+    status.state === "ok" ? `Tally online · ${status.latency_ms}ms` :
+    status.state === "bad" ? "Tally offline" :
+    "Tally: checking…";
+  const title = status.state === "ok"
+    ? `${status.host || ""}\n${(status.companies || []).join("\n") || "(no company loaded)"}`
+    : status.error || "";
+  return (
+    <span className={`tally-status ${status.state}`} title={title}>
+      <span className="dot"></span>
+      {label}
+    </span>
+  );
+}
+
+// ---------- Root App ----------
+function App() {
+  const [view, setView] = useState("home"); // home | entry | summary | staging
+  const [header, setHeader] = useState(null);
+  const [submittedRows, setSubmittedRows] = useState([]);
+  // Track the current batch (company + date) so Staging can show just this date's drafts.
+  const [batch, setBatch] = useState(() => {
+    const saved = localStorage.getItem("tdp.batch");
+    return saved ? JSON.parse(saved) : null;
+  });
+
+  useEffect(() => {
+    if (batch) localStorage.setItem("tdp.batch", JSON.stringify(batch));
+  }, [batch]);
+
+  const start = (h) => {
+    setHeader(h);
+    setBatch({ company: h.company, entryDate: h.entryDate });
+    setView("entry");
+  };
+  const goToSummary = (rows) => {
+    setSubmittedRows(rows);
+    setView("summary");
+  };
+  const afterSaved = ({ goToStaging }) => {
+    if (goToStaging) setView("staging");
+    else setView("home");
+  };
+
+  return (
+    <>
+      <header>
+        <div className="brand">
+          Tally Production Entry
+          <TallyStatusBadge />
+        </div>
+        <nav>
+          <button onClick={() => setView("home")}>New entry</button>
+          <button
+            onClick={() => setView("staging")}
+            disabled={!batch}
+            title={batch ? `Staging for ${batch.entryDate}` : "Start an entry first"}
+          >
+            Staging{batch ? ` (${batch.entryDate})` : ""}
+          </button>
+          <a href="/entries">All entries</a>
+          <a href="/policies">Policies</a>
+        </nav>
+      </header>
+      <main>
+        {view === "home" && <Home onStart={start} />}
+        {view === "entry" && header && (
+          <Entry header={header} onSubmit={goToSummary} onBack={() => setView("home")} />
+        )}
+        {view === "summary" && header && (
+          <Summary
+            header={header}
+            rows={submittedRows}
+            onSaved={afterSaved}
+            onBack={() => setView("entry")}
+          />
+        )}
+        {view === "staging" && batch && (
+          <Staging
+            company={batch.company}
+            entryDate={batch.entryDate}
+            onBack={() => setView("home")}
+          />
+        )}
+        {view === "staging" && !batch && (
+          <div className="card">
+            <p className="muted">No batch selected. Create a draft entry first.</p>
+            <button onClick={() => setView("home")}>Go to Home</button>
+          </div>
+        )}
+      </main>
+    </>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+</script>
+</body>
+</html>

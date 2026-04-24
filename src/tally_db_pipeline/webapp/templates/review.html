@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Review entry #{{ entry.id }}{% endblock %}
+{% block content %}
+<h1>Review &amp; Post
+  <span class="status-badge status-{{ entry.status }}">{{ entry.status }}</span>
+</h1>
+<div class="muted">
+  {{ entry.company_name }} • {{ entry.voucher_type }} • {{ entry.entry_date }}
+</div>
+
+<div class="card">
+  <div class="section-title">Lines with non-zero quantity ({{ lines|length }})</div>
+  {% if not lines %}
+    <p class="muted">No non-zero lines. Go back and enter quantities.</p>
+  {% else %}
+  <table>
+    <thead>
+      <tr>
+        <th>Role</th>
+        <th>Item</th>
+        <th style="width:100px; text-align:right">Qty</th>
+        <th>UOM</th>
+        <th style="width:100px; text-align:right">Rate</th>
+        <th style="width:110px; text-align:right">Amount</th>
+        <th>Godown</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for l in lines %}
+      <tr>
+        <td><strong>{{ l.role }}</strong></td>
+        <td>{{ l.item_name }}</td>
+        <td style="text-align:right">{{ "%g"|format(l.quantity) }}</td>
+        <td>{{ l.uom }}</td>
+        <td style="text-align:right">{{ "%g"|format(l.rate) }}</td>
+        <td style="text-align:right">{{ "%.2f"|format(l.amount) }}</td>
+        <td>{{ l.godown or "" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+{% if entry.narration %}
+<div class="card">
+  <div class="section-title">Narration</div>
+  <div>{{ entry.narration }}</div>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="section-title">Voucher payload preview</div>
+  <pre>{{ voucher_preview | tojson(indent=2) }}</pre>
+</div>
+
+<div class="card flex-row" style="justify-content: space-between;">
+  <a class="btn btn-secondary" href="/entries/{{ entry.id }}/edit">← Back to edit</a>
+  {% if lines %}
+    <form method="post" action="/entries/{{ entry.id }}/post" style="margin:0;">
+      <button type="submit" class="btn-success">Approve &amp; Post to Tally</button>
+    </form>
+  {% endif %}
+</div>
+{% endblock %}

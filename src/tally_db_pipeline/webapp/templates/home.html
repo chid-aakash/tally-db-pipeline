@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}New production entry{% endblock %}
+{% block content %}
+<h1>Start a new production entry</h1>
+<div class="card">
+  <form method="post" action="/entries">
+    <label for="company">Company</label>
+    <select id="company" name="company" required>
+      {% for c in companies %}
+        <option value="{{ c }}" {% if c == selected_company %}selected{% endif %}>{{ c }}</option>
+      {% endfor %}
+    </select>
+
+    <label for="entry_date">Date</label>
+    <input type="date" id="entry_date" name="entry_date" value="{{ today }}" required>
+
+    <label for="voucher_type">Voucher type (sheet / category)</label>
+    <select id="voucher_type" name="voucher_type" required>
+      {% for p in policies %}
+        <option value="{{ p.voucher_type }}">
+          {{ p.voucher_type }}{% if p.description %} — {{ p.description }}{% endif %}
+        </option>
+      {% endfor %}
+    </select>
+
+    <label for="narration">Narration (optional)</label>
+    <textarea id="narration" name="narration" placeholder="e.g. Daily grinding-wheel consumption — Line A"></textarea>
+
+    <div style="margin-top: 16px;">
+      <button type="submit">Open entry form →</button>
+    </div>
+  </form>
+</div>
+
+{% if not policies %}
+<div class="card">
+  <p class="muted">No active policies for this company. Load a policy file with:</p>
+  <pre>tally-db-pipeline policy-load --file data/sj_policy_avinash.json</pre>
+</div>
+{% endif %}
+{% endblock %}

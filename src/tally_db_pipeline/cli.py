@@ -647,6 +647,72 @@ def ledger_prefix_audit_command(
         )
 
 
+@command("create-voucher")
+def create_voucher_command(
+    company: Optional[str] = typer.Option(
+        default=None,
+        help="Default Tally company name. Used for any voucher that doesn't specify its own 'company' field.",
+    ),
+    file: str = typer.Option(..., help="Path to a JSON file with a voucher spec, or a list of voucher specs."),
+    dry_run: bool = typer.Option(False, help="Build and print the import request without POSTing to Tally."),
+    continue_on_error: bool = typer.Option(False, help="Keep processing remaining vouchers if one fails."),
+    format: str = typer.Option("xml", help="Import wire format: 'xml' (IMPORTDATA envelope) or 'json' (JSONEx, requires TallyPrime 7.0)."),
+) -> None:
+    if format not in {"xml", "json"}:
+        typer.echo(f"Unknown --format {format!r}; must be 'xml' or 'json'.", err=True)
+        raise typer.Exit(code=1)
+
+    with open(file, "r", encoding="utf-8") as fh:
+        payload = json.load(fh)
+    vouchers = payload if isinstance(payload, list) else [payload]
+
+    any_failed = False
+    with _tally_client() as client:
+        for idx, voucher in enumerate(vouchers, start=1):
+            target_company = voucher.get("company") or company
+            if not target_company:
+                typer.echo(
+                    f"[{idx}] FAIL: no company specified (neither voucher 'company' field nor --company)",
+                    err=True,
+                )
+                if not continue_on_error:
+                    raise typer.Exit(code=1)
+                any_failed = True
+                continue
+
+            if format == "xml":
+                result = client.import_voucher(target_company, voucher, dry_run=dry_run)
+            else:
+                result = client.import_voucher_json(target_company, voucher, dry_run=dry_run)
+
+            if dry_run:
+                typer.echo(f"[{idx}] DRY RUN format={format} company={target_company!r}:")
+                if format == "xml":
+                    typer.echo(result["request_xml"])
+                else:
+                    typer.echo(json.dumps(result["request_payload"], indent=2))
+                continue
+
+            status = "OK" if result["ok"] else "FAIL"
+            typer.echo(
+                f"[{idx}] {status} format={format} company={target_company!r} "
+                f"created={result.get('created', 0)} altered={result.get('altered', 0)} "
+                f"ignored={result.get('ignored', 0)} errors={result.get('errors', 0)} "
+                f"last_vch_id={result.get('last_vch_id')}"
+            )
+            if result.get("line_error"):
+                typer.echo(f"     line_error: {result['line_error']}")
+            exc = result.get("exception") or result.get("exceptions")
+            if exc and str(exc) not in ("0", "None"):
+                typer.echo(f"     exception: {exc}")
+            if not result["ok"]:
+                any_failed = True
+                if not continue_on_error:
+                    raise typer.Exit(code=1)
+    if any_failed:
+        raise typer.Exit(code=1)
+
+
 @command("replay-xml")
 def replay_xml(
     kind: str = typer.Option(
@@ -671,3 +737,35 @@ def replay_bundle(
     with get_session() as session:
         result = replay_xml_bundle(session, directory=directory, company_name=company)
     typer.echo(json.dumps(result, indent=2))
+
+
+@command("policy-load")
+def policy_load_command(
+    file: str = typer.Option(..., help="Path to JSON policy file (see data/sj_policy_avinash.json)."),
+) -> None:
+    """Load / upsert voucher-type -> stock-group policy from a JSON file."""
+    from pathlib import Path
+    from .policy import load_policy_file
+
+    init_db()
+    with get_session() as session:
+        summary = load_policy_file(session, Path(file))
+    typer.echo(json.dumps(summary, indent=2))
+
+
+@command("serve")
+def serve_command(
+    host: str = typer.Option("0.0.0.0", help="Host interface to bind."),
+    port: int = typer.Option(8000, help="Port to listen on."),
+    reload: bool = typer.Option(False, help="Enable auto-reload (development)."),
+) -> None:
+    """Start the production-entry web app."""
+    import uvicorn
+
+    init_db()
+    uvicorn.run(
+        "tally_db_pipeline.webapp.main:app",
+        host=host,
+        port=port,
+        reload=reload,
+    )

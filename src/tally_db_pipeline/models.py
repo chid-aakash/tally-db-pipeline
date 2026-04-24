@@ -68,6 +68,7 @@ class Company(Base):
     email: Mapped[str | None] = mapped_column(String(255))
     gstn: Mapped[str | None] = mapped_column(String(100))
     income_tax_number: Mapped[str | None] = mapped_column(String(100))
+    default_godown: Mapped[str | None] = mapped_column(String(255))
     last_synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
 
@@ -276,3 +277,75 @@ class VoucherUnknownSection(Base):
     section_xml: Mapped[str] = mapped_column(Text, nullable=False)
 
     voucher: Mapped["Voucher"] = relationship(back_populates="unknown_sections")
+
+
+class SJPolicy(Base):
+    __tablename__ = "sj_policy"
+    __table_args__ = (UniqueConstraint("company_name", "voucher_type", name="uq_sj_policy_company_vt"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    voucher_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    strict: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    rate_policy: Mapped[str] = mapped_column(String(50), default="stock_master", nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    groups: Mapped[list["SJPolicyGroup"]] = relationship(
+        back_populates="policy", cascade="all, delete-orphan"
+    )
+
+
+class SJPolicyGroup(Base):
+    __tablename__ = "sj_policy_group"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    policy_id: Mapped[int] = mapped_column(ForeignKey("sj_policy.id"), nullable=False)
+    stock_group: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[str] = mapped_column(String(20), nullable=False)  # 'consume' | 'produce'
+    default_godown: Mapped[str | None] = mapped_column(String(255))
+    notes: Mapped[str | None] = mapped_column(Text)
+
+    policy: Mapped["SJPolicy"] = relationship(back_populates="groups")
+
+
+class ProductionEntry(Base):
+    __tablename__ = "production_entries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    remote_id: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    company_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    entry_date: Mapped[str] = mapped_column(String(20), nullable=False)  # YYYY-MM-DD
+    voucher_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), default="draft", nullable=False)
+    # draft | submitted | posted | failed
+    narration: Mapped[str | None] = mapped_column(Text)
+    tally_voucher_number: Mapped[str | None] = mapped_column(String(100))
+    tally_master_id: Mapped[str | None] = mapped_column(String(100))
+    tally_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime)
+    posted_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    lines: Mapped[list["ProductionEntryLine"]] = relationship(
+        back_populates="entry", cascade="all, delete-orphan"
+    )
+
+
+class ProductionEntryLine(Base):
+    __tablename__ = "production_entry_lines"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    entry_id: Mapped[int] = mapped_column(ForeignKey("production_entries.id"), nullable=False)
+    role: Mapped[str] = mapped_column(String(20), nullable=False)  # 'consume' | 'produce'
+    item_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    quantity: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    uom: Mapped[str | None] = mapped_column(String(50))
+    rate: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    amount: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    godown: Mapped[str | None] = mapped_column(String(255))
+    opening_stock_snapshot: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+
+    entry: Mapped["ProductionEntry"] = relationship(back_populates="lines")
