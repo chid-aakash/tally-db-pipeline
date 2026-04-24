@@ -369,26 +369,29 @@ class ConsumptionReportSelection(Base):
 class DailyProductionReport(Base):
     """Shift-level production tally: hourly output, rejection and rework grids plus idle-time log.
 
-    Mirrors the paper "Daily Production Report" form (Avinash Line 4). A report is the
-    source-of-truth artifact for the shift; any Tally vouchers derived from it are a
-    downstream action, not this table's concern."""
+    Mirrors the paper "Daily Production Report" form. A report is the source-of-truth
+    artifact for one (date, shift, line, model) combination; any Tally vouchers derived
+    from it are a downstream action, not this table's concern."""
 
     __tablename__ = "daily_production_reports"
     __table_args__ = (
-        UniqueConstraint("company_name", "report_date", "shift", "line", name="uq_dpr_shift"),
+        UniqueConstraint(
+            "company_name", "report_date", "shift", "line", "model",
+            name="uq_dpr_shift_model",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     company_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    report_date: Mapped[str] = mapped_column(String(10), nullable=False)  # YYYY-MM-DD
+    report_date: Mapped[str] = mapped_column(String(10), nullable=False)  # YYYY-MM-DD, shift-start date
     shift: Mapped[str] = mapped_column(String(10), nullable=False)
     line: Mapped[str] = mapped_column(String(20), nullable=False)
-    model: Mapped[str | None] = mapped_column(String(100))
+    model: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")  # draft|submitted
-    # Cumulative totals are entered manually on the paper form (top-of-line counts before shift start).
-    cumulative_input: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
-    cumulative_output: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
-    cumulative_rework: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    # Hour slots for this report, serialized as JSON list of {key, label}. Lets each
+    # shift carry its own schedule (S1 day slots differ from S2/S3 night slots) without
+    # a schema change. If empty, the default S1 slots from daily_report.py apply.
+    hour_slots_json: Mapped[str | None] = mapped_column(Text)
     rework_cleared_qty: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     narration: Mapped[str | None] = mapped_column(Text)
     supervisor_name: Mapped[str | None] = mapped_column(String(255))

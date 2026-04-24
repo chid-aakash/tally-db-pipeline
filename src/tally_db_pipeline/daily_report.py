@@ -10,8 +10,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-# Hourly slots as they appear on the paper form. Keys are slugs so they are
-# URL-/form-safe; labels are what the user sees.
+# Reserved hour_key for per-row cumulative totals stored in DPRHourlyCell.
+# Keeps the schema uniform rather than special-casing cumulative columns on
+# the parent report.
+CUMULATIVE_KEY = "cumulative"
+
+
+# Hourly slots as they appear on the paper form (S1 day shift — matches the Line 4
+# Renz 3b report image). Keys are slugs so they are URL-/form-safe; labels are what
+# the user sees. `HOUR_SLOTS` is the fallback default when a report has no
+# `hour_slots_json` stored.
 HOUR_SLOTS: list[tuple[str, str]] = [
     ("h08", "8"),
     ("h09", "9"),
@@ -27,6 +35,64 @@ HOUR_SLOTS: list[tuple[str, str]] = [
     ("h1930", "7:30"),
     ("ot", "OT"),
 ]
+
+
+# Shift presets. Users can pick one at report-create time and edit the labels per
+# report — the edited list is persisted in `DailyProductionReport.hour_slots_json`
+# so historical reports always render with their original hour scheme even if the
+# presets here change later.
+SHIFT_PRESETS: dict[str, list[tuple[str, str]]] = {
+    "S1": HOUR_SLOTS,
+    "S2": [
+        ("h16", "4"),
+        ("h17", "5"),
+        ("h18", "6"),
+        ("h19", "7"),
+        ("h20", "8"),
+        ("h21", "9"),
+        ("h2230", "10:30"),
+        ("h2330", "11:30"),
+        ("h0030", "12:30"),
+        ("h0130", "1:30"),
+        ("h0230", "2:30"),
+        ("h0330", "3:30"),
+        ("ot", "OT"),
+    ],
+    "S3": [
+        ("h04", "4"),
+        ("h05", "5"),
+        ("h06", "6"),
+        ("h07", "7"),
+        ("h08", "8"),
+        ("h09", "9"),
+        ("h1030", "10:30"),
+        ("h1130", "11:30"),
+        ("h1230", "12:30"),
+        ("h1330", "1:30"),
+        ("h1430", "2:30"),
+        ("h1530", "3:30"),
+        ("ot", "OT"),
+    ],
+}
+
+
+def load_hour_slots(hour_slots_json: str | None, shift: str | None = None) -> list[tuple[str, str]]:
+    """Return the effective hour list for a report.
+
+    Prefer the report's stored JSON; fall back to the shift preset; finally the
+    legacy default. Returned as list[(key, label)] so templates can iterate
+    without caring about shape."""
+    import json
+
+    if hour_slots_json:
+        try:
+            data = json.loads(hour_slots_json)
+            return [(str(s["key"]), str(s["label"])) for s in data if s.get("key")]
+        except (ValueError, KeyError, TypeError):
+            pass  # Fall through to preset
+    if shift and shift in SHIFT_PRESETS:
+        return list(SHIFT_PRESETS[shift])
+    return list(HOUR_SLOTS)
 
 
 @dataclass(frozen=True)
@@ -84,7 +150,7 @@ SECTIONS: dict[str, list[Row]] = {
 }
 
 
-SHIFT_OPTIONS: list[str] = ["A", "B", "G"]
+SHIFT_OPTIONS: list[str] = ["S1", "S2", "S3"]
 LINE_OPTIONS: list[str] = ["1", "2", "3", "4"]
 
 
@@ -102,35 +168,57 @@ def rejection_rows_grouped() -> list[tuple[str, list[Row]]]:
     return out
 
 
-def empty_cells_matrix() -> dict[str, dict[str, dict[str, float]]]:
+def empty_cells_matrix(
+    hour_slots: list[tuple[str, str]] | None = None,
+) -> dict[str, dict[str, dict[str, float]]]:
     """Return `{section: {row_key: {hour_key: 0.0}}}` with every slot zeroed.
 
-    Used by templates so missing DB rows still render as 0 rather than blanks —
-    avoids a KeyError the first time a report is opened."""
+    `hour_slots` is the report's effective hour list (from `load_hour_slots`).
+    Includes the reserved `CUMULATIVE_KEY` cell on every row so templates can
+    always render the Cumulative column uniformly."""
+    slots = hour_slots if hour_slots is not None else HOUR_SLOTS
+    hour_keys = [CUMULATIVE_KEY] + [h[0] for h in slots]
     out: dict[str, dict[str, dict[str, float]]] = {}
     for section, rows in SECTIONS.items():
-        out[section] = {
-            r.key: {h[0]: 0.0 for h in HOUR_SLOTS} for r in rows
-        }
+        out[section] = {r.key: {hk: 0.0 for hk in hour_keys} for r in rows}
     return out
 
 
 def row_totals(cells: dict[str, dict[str, float]]) -> dict[str, float]:
-    """Sum hour values per row_key, returning `{row_key: total}`."""
-    return {rk: sum(vals.values()) for rk, vals in cells.items()}
+    """Sum of hourly values per row. Excludes the cumulative cell so the
+    "Total" column on the form (sum of the shift's hours) stays distinct from
+    the "Cumulative" column (running total from model start)."""
+    return {
+        rk: sum(v for hk, v in vals.items() if hk != CUMULATIVE_KEY)
+        for rk, vals in cells.items()
+    }
 
 
-def column_totals(cells: dict[str, dict[str, float]]) -> dict[str, float]:
-    """Sum per hour across all rows in a section."""
-    out: dict[str, float] = {h[0]: 0.0 for h in HOUR_SLOTS}
+def column_totals(
+    cells: dict[str, dict[str, float]],
+    hour_slots: list[tuple[str, str]] | None = None,
+) -> dict[str, float]:
+    """Sum per hour across all rows in a section. Cumulative cells are summed
+    separately so the footer row shows a total cumulative alongside hourly totals."""
+    slots = hour_slots if hour_slots is not None else HOUR_SLOTS
+    hour_keys = [CUMULATIVE_KEY] + [h[0] for h in slots]
+    out: dict[str, float] = {hk: 0.0 for hk in hour_keys}
     for _rk, vals in cells.items():
         for hk, v in vals.items():
-            out[hk] = out.get(hk, 0.0) + v
+            if hk in out:
+                out[hk] += v
     return out
 
 
 def grand_total(cells: dict[str, dict[str, float]]) -> float:
-    return sum(v for vals in cells.values() for v in vals.values())
+    """Sum across all hourly cells, excluding cumulative (which is already a
+    running total and would double-count)."""
+    return sum(
+        v
+        for vals in cells.values()
+        for hk, v in vals.items()
+        if hk != CUMULATIVE_KEY
+    )
 
 
 def safe_pct(numer: float, denom: float) -> float:
