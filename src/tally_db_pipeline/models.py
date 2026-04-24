@@ -364,3 +364,83 @@ class ConsumptionReportSelection(Base):
     kind: Mapped[str] = mapped_column(String(20), nullable=False)  # 'group' | 'item'
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class DailyProductionReport(Base):
+    """Shift-level production tally: hourly output, rejection and rework grids plus idle-time log.
+
+    Mirrors the paper "Daily Production Report" form (Avinash Line 4). A report is the
+    source-of-truth artifact for the shift; any Tally vouchers derived from it are a
+    downstream action, not this table's concern."""
+
+    __tablename__ = "daily_production_reports"
+    __table_args__ = (
+        UniqueConstraint("company_name", "report_date", "shift", "line", name="uq_dpr_shift"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    report_date: Mapped[str] = mapped_column(String(10), nullable=False)  # YYYY-MM-DD
+    shift: Mapped[str] = mapped_column(String(10), nullable=False)
+    line: Mapped[str] = mapped_column(String(20), nullable=False)
+    model: Mapped[str | None] = mapped_column(String(100))
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")  # draft|submitted
+    # Cumulative totals are entered manually on the paper form (top-of-line counts before shift start).
+    cumulative_input: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    cumulative_output: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    cumulative_rework: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    rework_cleared_qty: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    narration: Mapped[str | None] = mapped_column(Text)
+    supervisor_name: Mapped[str | None] = mapped_column(String(255))
+    incharge_name: Mapped[str | None] = mapped_column(String(255))
+    head_name: Mapped[str | None] = mapped_column(String(255))
+    doc_no: Mapped[str | None] = mapped_column(String(50))
+    rev_no: Mapped[str | None] = mapped_column(String(50))
+    rev_date: Mapped[str | None] = mapped_column(String(20))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    cells: Mapped[list["DPRHourlyCell"]] = relationship(back_populates="report", cascade="all, delete-orphan")
+    idle_events: Mapped[list["DPRIdleEvent"]] = relationship(back_populates="report", cascade="all, delete-orphan")
+
+
+class DPRHourlyCell(Base):
+    """One cell in any of the three hourly grids (production / rejection / rework).
+
+    (section, row_key, hour_key) uniquely identifies a cell within a report. Row/hour
+    keys are string slugs driven by the static definitions in production.py, so the
+    schema does not need a migration when rows are added or removed."""
+
+    __tablename__ = "dpr_hourly_cells"
+    __table_args__ = (
+        UniqueConstraint("report_id", "section", "row_key", "hour_key", name="uq_dpr_cell"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    report_id: Mapped[int] = mapped_column(ForeignKey("daily_production_reports.id"), nullable=False)
+    section: Mapped[str] = mapped_column(String(20), nullable=False)  # 'production' | 'rejection' | 'rework'
+    row_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    hour_key: Mapped[str] = mapped_column(String(20), nullable=False)
+    value: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+
+    report: Mapped["DailyProductionReport"] = relationship(back_populates="cells")
+
+
+class DPRIdleEvent(Base):
+    """One idle-time incident (machine stop, glass shortage, etc.) on a shift."""
+
+    __tablename__ = "dpr_idle_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    report_id: Mapped[int] = mapped_column(ForeignKey("daily_production_reports.id"), nullable=False)
+    ordinal: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    machine: Mapped[str | None] = mapped_column(String(100))
+    description: Mapped[str | None] = mapped_column(String(500))
+    from_time: Mapped[str | None] = mapped_column(String(10))  # HH:MM
+    to_time: Mapped[str | None] = mapped_column(String(10))
+    time_loss_min: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    attended_by: Mapped[str | None] = mapped_column(String(100))
+    remarks: Mapped[str | None] = mapped_column(String(500))
+
+    report: Mapped["DailyProductionReport"] = relationship(back_populates="idle_events")

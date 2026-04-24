@@ -29,6 +29,9 @@ from ..models import (
     Base,
     Company,
     ConsumptionReportSelection,
+    DailyProductionReport,
+    DPRHourlyCell,
+    DPRIdleEvent,
     ProductionEntry,
     ProductionEntryLine,
     SJPolicy,
@@ -37,6 +40,7 @@ from ..models import (
     Voucher,
     VoucherInventoryEntry,
 )
+from .. import daily_report as dpr
 from ..policy import (
     default_godown_for_role,
     entry_to_voucher_dict,
