@@ -1,0 +1,339 @@
+{% extends "base.html" %}
+{% block title %}Edit Daily Production Report — {{ report.report_date }} {{ report.shift }} L{{ report.line }}{% endblock %}
+
+{% block content %}
+<style>
+  main { max-width: none !important; padding-left: 20px; padding-right: 20px; }
+
+  /* Sticky meta bar at top with live KPIs */
+  .dpr-meta {
+    position: sticky; top: 0; z-index: 20;
+    background: #fff; border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px 16px; margin-bottom: 14px; box-shadow: var(--shadow-sm);
+  }
+  .dpr-meta-row { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)) 1.2fr; gap: 10px 14px; align-items: center; }
+  .dpr-meta-row .mv { font-weight: 700; color: var(--navy-900); font-size: 1rem; }
+  .dpr-meta-row .ml { color: var(--muted); font-size: .74rem; text-transform: uppercase; letter-spacing: .04em; }
+  .dpr-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 10px; }
+  .kpi {
+    border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
+    display: flex; flex-direction: column; align-items: center; background: var(--surface-2);
+  }
+  .kpi .k-label { font-size: .72rem; color: var(--muted); letter-spacing: .04em; text-transform: uppercase; }
+  .kpi .k-val { font-size: 1.3rem; font-weight: 700; color: var(--navy-900); line-height: 1.1; margin-top: 2px; }
+  .kpi.warn .k-val { color: #b91c1c; }
+
+  /* Collapsible section */
+  details.dpr-sec {
+    border: 1px solid var(--line); border-radius: 10px; background: #fff;
+    margin-bottom: 12px; overflow: hidden;
+  }
+  details.dpr-sec > summary {
+    padding: 12px 16px; cursor: pointer; font-weight: 700; color: var(--navy-900);
+    background: var(--navy-50); list-style: revert; user-select: none;
+  }
+  details.dpr-sec[open] > summary { border-bottom: 1px solid var(--line); }
+  .sec-body { padding: 12px 14px; overflow: auto; }
+
+  /* Hourly grid */
+  .hgrid { width: 100%; border-collapse: collapse; font-size: .86rem; }
+  .hgrid th, .hgrid td { padding: 4px 6px; border: 1px solid var(--line); text-align: center; }
+  .hgrid thead th { background: var(--navy-50); color: var(--navy-900); font-weight: 600; }
+  .hgrid td.row-label, .hgrid th.row-label {
+    text-align: left; position: sticky; left: 0; background: #fff; z-index: 1;
+    min-width: 200px; font-weight: 500;
+  }
+  .hgrid th.row-label { background: var(--navy-50); }
+  .hgrid tr.grp-head td { background: #f5f3ff; color: #4c1d95; font-weight: 700; text-align: left; }
+  .hgrid td.cum { background: #fef3c7; font-weight: 600; }
+  .hgrid th.cum { background: #fde68a; }
+  .hgrid th.hl-edit { font-size: .76rem; color: var(--muted); font-weight: 500; padding-top: 0; }
+  .hgrid input[type="number"],
+  .hgrid input[type="text"] {
+    width: 100%; min-width: 52px; padding: 4px 2px; border: 1px solid transparent;
+    font-size: .86rem; text-align: center; background: transparent;
+    -moz-appearance: textfield;
+  }
+  .hgrid input[type="number"]:focus,
+  .hgrid input[type="text"]:focus { outline: none; border-color: var(--navy-700); background: #fffbeb; }
+  .hgrid input[type="number"]::-webkit-outer-spin-button,
+  .hgrid input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  .hgrid tr.total-row td { background: var(--navy-50); font-weight: 700; }
+  .hgrid tr.total-row td.row-label { background: var(--navy-50); }
+
+  /* Idle events list */
+  .idle-table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+  .idle-table th, .idle-table td { padding: 6px 8px; border: 1px solid var(--line); }
+  .idle-table th { background: var(--navy-50); color: var(--navy-900); }
+  .idle-table input { width: 100%; padding: 4px 6px; border: 1px solid transparent; font-size: .88rem; background: transparent; }
+  .idle-table input:focus { outline: none; border-color: var(--navy-700); background: #fffbeb; }
+  .idle-del { background: transparent; color: #b91c1c; border: 0; cursor: pointer; font-size: 1.2rem; padding: 0; }
+
+  /* Sticky action bar at bottom */
+  .dpr-actions {
+    position: sticky; bottom: 0; background: #fff; border: 1px solid var(--line);
+    border-radius: 10px; padding: 10px 14px; margin-top: 12px; box-shadow: 0 -4px 12px rgba(0,0,0,0.04);
+    display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap;
+  }
+  .dpr-actions .ghost { background: var(--surface-2); color: var(--navy-900); border: 1px solid var(--line); }
+</style>
+
+<form method="post" action="/production/daily-report/{{ report.id }}/save" id="dpr-form">
+  {# --- Sticky meta bar + live KPIs --- #}
+  <div class="dpr-meta">
+    <div class="dpr-meta-row">
+      <div><div class="ml">Date</div><div class="mv">{{ report.report_date }}</div></div>
+      <div><div class="ml">Shift</div><div class="mv">{{ report.shift }}</div></div>
+      <div><div class="ml">Line</div><div class="mv">{{ report.line }}</div></div>
+      <div>
+        <div class="ml">Model</div>
+        <input type="text" name="model" value="{{ report.model or '' }}" required
+               style="font-weight:700; color:var(--navy-900); border:1px solid var(--line); border-radius:6px; padding:6px 8px; width:100%;">
+      </div>
+      <div class="muted" style="font-size:.76rem;">
+        <div>Company</div>
+        <div style="color:var(--ink);">{{ report.company_name }}</div>
+      </div>
+    </div>
+    <div class="dpr-kpis">
+      <div class="kpi"><div class="k-label">Output (Washing)</div><div class="k-val" id="kpi-output">{{ '%.0f' % totals.output_for_pct }}</div></div>
+      <div class="kpi"><div class="k-label">Rejection</div><div class="k-val" id="kpi-rej">{{ '%.0f' % totals.rejection.total }}</div></div>
+      <div class="kpi"><div class="k-label">Rejection %</div><div class="k-val" id="kpi-rej-pct">{{ '%.1f' % totals.rejection_pct }}%</div></div>
+      <div class="kpi"><div class="k-label">Rework</div><div class="k-val" id="kpi-rw">{{ '%.0f' % totals.rework.total }}</div></div>
+    </div>
+  </div>
+
+  {% macro grid(section, rows_or_groups, is_grouped=False) %}
+    <table class="hgrid" data-section="{{ section }}">
+      <thead>
+        <tr>
+          <th class="row-label">Description</th>
+          <th class="cum">Cumulative</th>
+          {% for key, label in hour_slots %}
+            <th>
+              <input type="text" name="hour_label__{{ key }}" value="{{ label }}"
+                     style="font-weight:600; font-size:.9rem; text-align:center;">
+            </th>
+          {% endfor %}
+          <th>Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% if is_grouped %}
+          {% for group_name, group_rows in rows_or_groups %}
+            <tr class="grp-head"><td class="row-label" colspan="{{ hour_slots|length + 3 }}">{{ group_name }}</td></tr>
+            {% for r in group_rows %}
+              {{ grid_row(section, r) }}
+            {% endfor %}
+          {% endfor %}
+        {% else %}
+          {% for r in rows_or_groups %}
+            {{ grid_row(section, r) }}
+          {% endfor %}
+        {% endif %}
+        {# Column totals footer #}
+        <tr class="total-row">
+          <td class="row-label">Total</td>
+          <td class="cum" data-col-total="{{ cumulative_key }}">{{ '%.0f' % totals[section].cols.get(cumulative_key, 0) }}</td>
+          {% for key, _label in hour_slots %}
+            <td data-col-total="{{ key }}">{{ '%.0f' % totals[section].cols.get(key, 0) }}</td>
+          {% endfor %}
+          <td data-grand-total>{{ '%.0f' % totals[section].total }}</td>
+        </tr>
+      </tbody>
+    </table>
+  {% endmacro %}
+
+  {% macro grid_row(section, r) %}
+    <tr data-row-key="{{ r.key }}">
+      <td class="row-label">{{ r.label }}</td>
+      <td class="cum">
+        <input type="number" step="any" min="0" class="cell-input cell-cum"
+               name="cell__{{ section }}__{{ r.key }}__{{ cumulative_key }}"
+               value="{{ ('%.0f' % cells[section][r.key][cumulative_key]) if cells[section][r.key][cumulative_key] else '' }}">
+      </td>
+      {% for key, _label in hour_slots %}
+        <td>
+          <input type="number" step="any" min="0" class="cell-input cell-hour"
+                 data-hour-key="{{ key }}"
+                 name="cell__{{ section }}__{{ r.key }}__{{ key }}"
+                 value="{{ ('%.0f' % cells[section][r.key][key]) if cells[section][r.key][key] else '' }}">
+        </td>
+      {% endfor %}
+      <td data-row-total>{{ '%.0f' % totals[section].rows.get(r.key, 0) }}</td>
+    </tr>
+  {% endmacro %}
+
+  <details class="dpr-sec" open>
+    <summary>1 · Production — hourly output per process</summary>
+    <div class="sec-body">
+      {{ grid("production", production_rows, is_grouped=False) }}
+    </div>
+  </details>
+
+  <details class="dpr-sec" open>
+    <summary>2 · Rejection — hourly defect counts</summary>
+    <div class="sec-body">
+      {{ grid("rejection", rejection_groups, is_grouped=True) }}
+    </div>
+  </details>
+
+  <details class="dpr-sec">
+    <summary>3 · Rework — hourly rework counts</summary>
+    <div class="sec-body">
+      {{ grid("rework", rework_rows, is_grouped=False) }}
+      <div style="margin-top:12px; display:grid; grid-template-columns: 1fr 1fr 1fr; gap:14px;">
+        <label>Rework Cleared Qty
+          <input type="number" step="any" min="0" name="rework_cleared_qty" value="{{ '%.0f' % report.rework_cleared_qty if report.rework_cleared_qty else '' }}">
+        </label>
+      </div>
+    </div>
+  </details>
+
+  <details class="dpr-sec">
+    <summary>4 · Idle time</summary>
+    <div class="sec-body">
+      <table class="idle-table" id="idle-table">
+        <thead>
+          <tr>
+            <th style="width:120px">Machine</th>
+            <th>Description</th>
+            <th style="width:90px">From</th>
+            <th style="width:90px">To</th>
+            <th style="width:100px">Time Loss (min)</th>
+            <th style="width:120px">Attended By</th>
+            <th>Remarks</th>
+            <th style="width:40px"></th>
+          </tr>
+        </thead>
+        <tbody id="idle-rows">
+          {% for e in idle_events %}
+          <tr data-idle-idx="{{ loop.index0 }}">
+            <td><input type="text" name="idle__{{ loop.index0 }}__machine" value="{{ e.machine or '' }}"></td>
+            <td><input type="text" name="idle__{{ loop.index0 }}__description" value="{{ e.description or '' }}"></td>
+            <td><input type="text" name="idle__{{ loop.index0 }}__from" value="{{ e.from_time or '' }}" placeholder="HH:MM"></td>
+            <td><input type="text" name="idle__{{ loop.index0 }}__to" value="{{ e.to_time or '' }}" placeholder="HH:MM"></td>
+            <td><input type="number" step="any" min="0" name="idle__{{ loop.index0 }}__time_loss" value="{{ e.time_loss_min or '' }}"></td>
+            <td><input type="text" name="idle__{{ loop.index0 }}__attended_by" value="{{ e.attended_by or '' }}"></td>
+            <td><input type="text" name="idle__{{ loop.index0 }}__remarks" value="{{ e.remarks or '' }}"></td>
+            <td><button type="button" class="idle-del" title="Remove">×</button></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <button type="button" id="add-idle" style="margin-top:10px; background:var(--surface-2); color:var(--navy-900); border:1px solid var(--line); padding:8px 14px;">+ Add idle event</button>
+    </div>
+  </details>
+
+  <details class="dpr-sec">
+    <summary>5 · Signatures & document meta</summary>
+    <div class="sec-body" style="display:grid; grid-template-columns: repeat(3, 1fr); gap:14px;">
+      <label>Supervisor <input type="text" name="supervisor_name" value="{{ report.supervisor_name or '' }}"></label>
+      <label>Production In-charge <input type="text" name="incharge_name" value="{{ report.incharge_name or '' }}"></label>
+      <label>Production Head <input type="text" name="head_name" value="{{ report.head_name or '' }}"></label>
+      <label>Doc No <input type="text" name="doc_no" value="{{ report.doc_no or '' }}"></label>
+      <label>Rev No <input type="text" name="rev_no" value="{{ report.rev_no or '' }}"></label>
+      <label>Rev Date <input type="text" name="rev_date" value="{{ report.rev_date or '' }}" placeholder="DD/MM/YYYY"></label>
+      <label style="grid-column: 1 / -1;">Narration
+        <textarea name="narration" rows="2">{{ report.narration or '' }}</textarea>
+      </label>
+    </div>
+  </details>
+
+  <div class="dpr-actions">
+    <a href="/production/daily-report" class="ghost" style="padding:8px 14px; border-radius:8px; text-decoration:none;">← Back to list</a>
+    <div style="display:flex; gap:8px;">
+      <button type="submit" name="action" value="save" class="ghost">Save draft</button>
+      <button type="submit" name="action" value="submit">Save & submit</button>
+      <a href="/production/daily-report/{{ report.id }}" style="padding:8px 14px; border-radius:8px; background:var(--surface-2); color:var(--navy-900); border:1px solid var(--line); text-decoration:none; font-weight:600;">View summary →</a>
+    </div>
+  </div>
+</form>
+
+<script>
+(function () {
+  // --- Live totals + KPI computation ---
+  function recompute() {
+    var totals = {production: 0, rejection: 0, rework: 0};
+    var washing = 0;
+
+    document.querySelectorAll("table.hgrid").forEach(function (tbl) {
+      var section = tbl.dataset.section;
+      var colSums = {};
+      // Per-row totals (exclude cumulative)
+      tbl.querySelectorAll("tbody tr[data-row-key]").forEach(function (tr) {
+        var rowKey = tr.dataset.rowKey;
+        var rowTotal = 0;
+        tr.querySelectorAll("input.cell-hour").forEach(function (inp) {
+          var v = parseFloat(inp.value) || 0;
+          rowTotal += v;
+          var hk = inp.dataset.hourKey;
+          colSums[hk] = (colSums[hk] || 0) + v;
+        });
+        var tot = tr.querySelector("[data-row-total]");
+        if (tot) tot.textContent = rowTotal.toFixed(0);
+        // Track washing row for output denominator in %
+        if (section === "production" && rowKey === "washing_incl_rework") washing = rowTotal;
+        totals[section] += rowTotal;
+        // Cumulative cell aggregated separately
+        var cumInp = tr.querySelector("input.cell-cum");
+        if (cumInp) {
+          colSums["__cum__"] = (colSums["__cum__"] || 0) + (parseFloat(cumInp.value) || 0);
+        }
+      });
+      // Footer column totals
+      tbl.querySelectorAll("tr.total-row td[data-col-total]").forEach(function (td) {
+        var hk = td.dataset.colTotal;
+        var v = hk === "{{ cumulative_key }}" ? (colSums["__cum__"] || 0) : (colSums[hk] || 0);
+        td.textContent = v.toFixed(0);
+      });
+      var grand = tbl.querySelector("tr.total-row td[data-grand-total]");
+      if (grand) grand.textContent = totals[section].toFixed(0);
+    });
+
+    // KPI bar
+    document.getElementById("kpi-output").textContent = washing.toFixed(0);
+    document.getElementById("kpi-rej").textContent = totals.rejection.toFixed(0);
+    document.getElementById("kpi-rw").textContent = totals.rework.toFixed(0);
+    var pct = washing > 0 ? (totals.rejection / washing * 100) : 0;
+    var rejKpi = document.getElementById("kpi-rej-pct");
+    rejKpi.textContent = pct.toFixed(1) + "%";
+    rejKpi.parentElement.classList.toggle("warn", pct > 5);
+  }
+  document.addEventListener("input", function (e) {
+    if (e.target && e.target.classList && (e.target.classList.contains("cell-hour") || e.target.classList.contains("cell-cum"))) {
+      recompute();
+    }
+  });
+
+  // --- Idle events: add / remove rows ---
+  var rows = document.getElementById("idle-rows");
+  document.getElementById("add-idle").addEventListener("click", function () {
+    var idx = rows.querySelectorAll("tr").length;
+    // Find a guaranteed-unique idx by scanning existing ordinals (in case of deletes)
+    var used = {};
+    rows.querySelectorAll("tr").forEach(function (r) { used[r.dataset.idleIdx] = 1; });
+    while (used[idx]) idx++;
+    var tr = document.createElement("tr");
+    tr.dataset.idleIdx = String(idx);
+    tr.innerHTML = [
+      "machine", "description", "from", "to", "time_loss", "attended_by", "remarks"
+    ].map(function (f) {
+      var type = (f === "time_loss") ? "number" : "text";
+      var ph = (f === "from" || f === "to") ? ' placeholder="HH:MM"' : "";
+      return '<td><input type="' + type + '" name="idle__' + idx + '__' + f + '"' + ph + '></td>';
+    }).join("") + '<td><button type="button" class="idle-del" title="Remove">×</button></td>';
+    rows.appendChild(tr);
+  });
+  rows.addEventListener("click", function (e) {
+    if (e.target && e.target.classList.contains("idle-del")) {
+      var tr = e.target.closest("tr");
+      if (tr) tr.parentNode.removeChild(tr);
+    }
+  });
+
+  // Prime the KPIs on first paint (covers server-rendered zero-cells correctly).
+  recompute();
+})();
+</script>
+{% endblock %}

@@ -1733,3 +1733,309 @@ def consumption_export_xlsx(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# ---------------------------------------------------------------------------
+# Daily Production Report
+# ---------------------------------------------------------------------------
+def _dpr_load_cells(
+    session: Session,
+    report: DailyProductionReport,
+    hour_slots: list[tuple[str, str]],
+) -> dict[str, dict[str, dict[str, float]]]:
+    """Return a fully-populated matrix `{section: {row_key: {hour_key: value}}}`.
+
+    Starts from an empty matrix so missing DB cells render as 0 and overlays
+    whatever cells the report has persisted. Templates can iterate without
+    key-missing guards."""
+    matrix = dpr.empty_cells_matrix(hour_slots)
+    for cell in report.cells:
+        section = matrix.get(cell.section)
+        if section is None:
+            continue
+        row = section.get(cell.row_key)
+        if row is None:
+            continue
+        if cell.hour_key in row:
+            row[cell.hour_key] = cell.value
+    return matrix
+
+
+def _dpr_compute_totals(
+    cells: dict[str, dict[str, dict[str, float]]],
+    hour_slots: list[tuple[str, str]],
+) -> dict:
+    """Aggregate totals the summary page and KPI bar need in one pass."""
+    prod = cells["production"]
+    rej = cells["rejection"]
+    rw = cells["rework"]
+    prod_col = dpr.column_totals(prod, hour_slots)
+    rej_col = dpr.column_totals(rej, hour_slots)
+    rw_col = dpr.column_totals(rw, hour_slots)
+    prod_rows = dpr.row_totals(prod)
+    rej_rows = dpr.row_totals(rej)
+    rw_rows = dpr.row_totals(rw)
+    # "Output" benchmark for rejection/rework % is Washing (the last process
+    # stage, including rework). If Washing is zero, fall back to the largest
+    # row total so the percentages are still meaningful during a partial shift.
+    washing = prod_rows.get("washing_incl_rework", 0.0)
+    if washing <= 0:
+        washing = max(prod_rows.values()) if prod_rows else 0.0
+    total_rej = dpr.grand_total(rej)
+    total_rw = dpr.grand_total(rw)
+    return {
+        "production": {"rows": prod_rows, "cols": prod_col, "total": dpr.grand_total(prod)},
+        "rejection": {"rows": rej_rows, "cols": rej_col, "total": total_rej},
+        "rework": {"rows": rw_rows, "cols": rw_col, "total": total_rw},
+        "output_for_pct": washing,
+        "rejection_pct": dpr.safe_pct(total_rej, washing),
+        "rework_pct": dpr.safe_pct(total_rw, washing),
+    }
+
+
+@app.get("/production/daily-report", response_class=HTMLResponse)
+def dpr_list(
+    request: Request,
+    company: str | None = None,
+    date: str | None = None,
+):
+    from datetime import date as _d
+    with _session() as session:
+        companies = _list_companies(session) or sorted(
+            c for c in session.scalars(select(Voucher.company_name).distinct()) if c
+        )
+        company = company or (companies[0] if companies else "")
+        q = select(DailyProductionReport).order_by(
+            DailyProductionReport.report_date.desc(),
+            DailyProductionReport.line,
+            DailyProductionReport.shift,
+            DailyProductionReport.model,
+        )
+        if company:
+            q = q.where(DailyProductionReport.company_name == company)
+        if date:
+            q = q.where(DailyProductionReport.report_date == date)
+        reports = list(session.scalars(q))
+    return templates.TemplateResponse(
+        request,
+        "production_list.html",
+        {
+            "companies": companies,
+            "selected_company": company,
+            "filter_date": date or "",
+            "reports": reports,
+            "today": _d.today().isoformat(),
+            "shift_options": dpr.SHIFT_OPTIONS,
+            "line_options": dpr.LINE_OPTIONS,
+        },
+    )
+
+
+@app.post("/production/daily-report")
+async def dpr_create(request: Request):
+    from urllib.parse import urlencode
+    form = await request.form()
+    company = (form.get("company") or "").strip()
+    report_date = (form.get("report_date") or "").strip()
+    shift = (form.get("shift") or "").strip()
+    line = (form.get("line") or "").strip()
+    model = (form.get("model") or "").strip()
+    if not all([company, report_date, shift, line]):
+        raise HTTPException(400, "company, date, shift and line are required")
+    import json as _json
+    slots = dpr.SHIFT_PRESETS.get(shift) or dpr.HOUR_SLOTS
+    hour_slots_json = _json.dumps([{"key": k, "label": l} for k, l in slots])
+    with _session() as session:
+        # Upsert: if a report already exists for this key, reuse it so users
+        # don't accidentally create two.
+        existing = session.scalar(
+            select(DailyProductionReport).where(
+                DailyProductionReport.company_name == company,
+                DailyProductionReport.report_date == report_date,
+                DailyProductionReport.shift == shift,
+                DailyProductionReport.line == line,
+                DailyProductionReport.model == model,
+            )
+        )
+        if existing:
+            report_id = existing.id
+        else:
+            row = DailyProductionReport(
+                company_name=company,
+                report_date=report_date,
+                shift=shift,
+                line=line,
+                model=model,
+                hour_slots_json=hour_slots_json,
+            )
+            session.add(row)
+            session.commit()
+            report_id = row.id
+    return RedirectResponse(f"/production/daily-report/{report_id}/edit", status_code=303)
+
+
+@app.get("/production/daily-report/{report_id}/edit", response_class=HTMLResponse)
+def dpr_edit(request: Request, report_id: int):
+    with _session() as session:
+        report = session.get(DailyProductionReport, report_id)
+        if not report:
+            raise HTTPException(404, "report not found")
+        hour_slots = dpr.load_hour_slots(report.hour_slots_json, report.shift)
+        cells = _dpr_load_cells(session, report, hour_slots)
+        idle_events = sorted(report.idle_events, key=lambda e: e.ordinal)
+        totals = _dpr_compute_totals(cells, hour_slots)
+    return templates.TemplateResponse(
+        request,
+        "production_edit.html",
+        {
+            "report": report,
+            "hour_slots": hour_slots,
+            "cumulative_key": dpr.CUMULATIVE_KEY,
+            "production_rows": dpr.PRODUCTION_ROWS,
+            "rejection_groups": dpr.rejection_rows_grouped(),
+            "rework_rows": dpr.REWORK_ROWS,
+            "cells": cells,
+            "idle_events": idle_events,
+            "totals": totals,
+            "shift_options": dpr.SHIFT_OPTIONS,
+            "line_options": dpr.LINE_OPTIONS,
+        },
+    )
+
+
+def _dpr_parse_float(raw) -> float:
+    try:
+        s = (raw or "").strip() if isinstance(raw, str) else raw
+        if s in (None, "", "-"):
+            return 0.0
+        return float(s)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+@app.post("/production/daily-report/{report_id}/save")
+async def dpr_save(request: Request, report_id: int):
+    form = await request.form()
+    action = (form.get("action") or "save").strip()
+    with _session() as session:
+        report = session.get(DailyProductionReport, report_id)
+        if not report:
+            raise HTTPException(404, "report not found")
+
+        # ---- Meta fields ----
+        report.model = (form.get("model") or "").strip()
+        report.narration = (form.get("narration") or "").strip() or None
+        report.rework_cleared_qty = _dpr_parse_float(form.get("rework_cleared_qty"))
+        report.supervisor_name = (form.get("supervisor_name") or "").strip() or None
+        report.incharge_name = (form.get("incharge_name") or "").strip() or None
+        report.head_name = (form.get("head_name") or "").strip() or None
+        report.doc_no = (form.get("doc_no") or "").strip() or None
+        report.rev_no = (form.get("rev_no") or "").strip() or None
+        report.rev_date = (form.get("rev_date") or "").strip() or None
+
+        # ---- Editable hour labels ----
+        hour_slots = dpr.load_hour_slots(report.hour_slots_json, report.shift)
+        new_slots: list[tuple[str, str]] = []
+        for key, default_label in hour_slots:
+            new_label = (form.get(f"hour_label__{key}") or default_label).strip() or default_label
+            new_slots.append((key, new_label))
+        import json as _json
+        report.hour_slots_json = _json.dumps([{"key": k, "label": l} for k, l in new_slots])
+
+        # ---- Grid cells ----
+        # Replace all cells atomically: simpler than diffing and avoids leaving
+        # ghost values when a row is removed from the static row list.
+        for existing in list(report.cells):
+            session.delete(existing)
+        session.flush()
+        row_keys_by_section = {
+            "production": [r.key for r in dpr.PRODUCTION_ROWS],
+            "rejection": [r.key for r in dpr.REJECTION_ROWS],
+            "rework": [r.key for r in dpr.REWORK_ROWS],
+        }
+        hour_keys = [dpr.CUMULATIVE_KEY] + [k for k, _ in new_slots]
+        for section, row_keys in row_keys_by_section.items():
+            for row_key in row_keys:
+                for hour_key in hour_keys:
+                    v = _dpr_parse_float(form.get(f"cell__{section}__{row_key}__{hour_key}"))
+                    if v:
+                        session.add(DPRHourlyCell(
+                            report_id=report.id,
+                            section=section,
+                            row_key=row_key,
+                            hour_key=hour_key,
+                            value=v,
+                        ))
+
+        # ---- Idle events ----
+        for existing in list(report.idle_events):
+            session.delete(existing)
+        session.flush()
+        idle_indices = sorted({
+            int(k.split("__")[1]) for k in form.keys()
+            if k.startswith("idle__") and k.split("__")[1].isdigit()
+        })
+        for ordinal, idx in enumerate(idle_indices):
+            desc = (form.get(f"idle__{idx}__description") or "").strip()
+            machine = (form.get(f"idle__{idx}__machine") or "").strip()
+            if not desc and not machine:
+                continue  # Skip empty idle rows the user added but never filled.
+            session.add(DPRIdleEvent(
+                report_id=report.id,
+                ordinal=ordinal,
+                machine=machine or None,
+                description=desc or None,
+                from_time=(form.get(f"idle__{idx}__from") or "").strip() or None,
+                to_time=(form.get(f"idle__{idx}__to") or "").strip() or None,
+                time_loss_min=_dpr_parse_float(form.get(f"idle__{idx}__time_loss")),
+                attended_by=(form.get(f"idle__{idx}__attended_by") or "").strip() or None,
+                remarks=(form.get(f"idle__{idx}__remarks") or "").strip() or None,
+            ))
+
+        if action == "submit":
+            report.status = "submitted"
+            report.submitted_at = datetime.utcnow()
+        report.updated_at = datetime.utcnow()
+        session.commit()
+
+        target = f"/production/daily-report/{report_id}"
+        if action != "submit":
+            target += "/edit"
+    return RedirectResponse(target, status_code=303)
+
+
+@app.get("/production/daily-report/{report_id}", response_class=HTMLResponse)
+def dpr_summary(request: Request, report_id: int):
+    with _session() as session:
+        report = session.get(DailyProductionReport, report_id)
+        if not report:
+            raise HTTPException(404, "report not found")
+        hour_slots = dpr.load_hour_slots(report.hour_slots_json, report.shift)
+        cells = _dpr_load_cells(session, report, hour_slots)
+        idle_events = sorted(report.idle_events, key=lambda e: e.ordinal)
+        totals = _dpr_compute_totals(cells, hour_slots)
+    return templates.TemplateResponse(
+        request,
+        "production_summary.html",
+        {
+            "report": report,
+            "hour_slots": hour_slots,
+            "cumulative_key": dpr.CUMULATIVE_KEY,
+            "production_rows": dpr.PRODUCTION_ROWS,
+            "rejection_groups": dpr.rejection_rows_grouped(),
+            "rework_rows": dpr.REWORK_ROWS,
+            "cells": cells,
+            "idle_events": idle_events,
+            "totals": totals,
+        },
+    )
+
+
+@app.post("/production/daily-report/{report_id}/delete")
+async def dpr_delete(report_id: int):
+    with _session() as session:
+        report = session.get(DailyProductionReport, report_id)
+        if report:
+            session.delete(report)
+            session.commit()
+    return RedirectResponse("/production/daily-report", status_code=303)
