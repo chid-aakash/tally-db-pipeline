@@ -32,13 +32,27 @@ from .sync import (
     sync_profiled_vouchers,
     sync_voucher_types,
     sync_vouchers,
+    sync_vouchers_by_alterid,
     sync_vouchers_in_chunks,
     sync_vouchers_incremental,
 )
+from .audits import export_ledger_prefix_mismatches, find_ledger_prefix_mismatches
 from .tally_client import TallyClient
 
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
+
+
+def _make_voucher_progress_emitter(every: int = 100):
+    def emit(event: dict) -> None:
+        index = event.get("index") or 0
+        total = event.get("total")
+        if index and (index % every == 0 or (total and index == total)):
+            suffix = f"/{total}" if total else ""
+            vtype = event.get("voucher_type_name") or ""
+            label = f" [{vtype}]" if vtype else ""
+            typer.echo(f"  saved {index}{suffix}{label}")
+    return emit
 
 
 def _emit_chunk_progress(event: dict) -> None:
@@ -222,10 +236,10 @@ def sync_companies_command() -> None:
 
 
 @command("sync-masters")
-def sync_masters_command() -> None:
+def sync_masters_command(company: Optional[str] = typer.Option(default=None, help="Exact Tally company name if multiple are loaded.")) -> None:
     init_db()
     with _tally_client() as client, get_session() as session:
-        result = sync_masters(session, client)
+        result = sync_masters(session, client, company_name=company)
     typer.echo(f"Synced masters for company: {result.get('company') or 'unknown'}")
     typer.echo(f"Groups: {result['groups']}")
     typer.echo(f"Ledgers: {result['ledgers']}")
@@ -246,8 +260,10 @@ def sync_vouchers_command(
     from_date: Optional[str] = typer.Option(default=None, help="Inclusive start date in YYYY-MM-DD format."),
     to_date: Optional[str] = typer.Option(default=None, help="Inclusive end date in YYYY-MM-DD format."),
     range_mode: str = typer.Option("collection", help="Range export strategy for dated voucher pulls: collection or daybook."),
+    progress_every: int = typer.Option(100, help="Emit a progress line every N vouchers saved. 0 to disable."),
 ) -> None:
     init_db()
+    progress_cb = _make_voucher_progress_emitter(progress_every) if progress_every > 0 else None
     with _tally_client() as client, get_session() as session:
         result = sync_vouchers(
             session,
@@ -257,6 +273,7 @@ def sync_vouchers_command(
             from_date=from_date,
             to_date=to_date,
             range_mode=range_mode,
+            voucher_progress_callback=progress_cb,
         )
     typer.echo(f"Synced {result['saved']} vouchers for type: {result['voucher_type']}")
     matched_voucher_types = result.get("matched_voucher_types") or []
@@ -264,6 +281,34 @@ def sync_vouchers_command(
         typer.echo(f"Matched exact voucher types: {', '.join(matched_voucher_types)}")
     if result.get("from_date") or result.get("to_date"):
         typer.echo(f"Date range: {result.get('from_date') or result.get('to_date')} to {result.get('to_date') or result.get('from_date')}")
+
+
+@command("sync-vouchers-by-alterid")
+def sync_vouchers_by_alterid_command(
+    company: str = typer.Option(..., help="Exact Tally company name, including FY suffix where applicable."),
+    since_alter_id: Optional[int] = typer.Option(
+        default=None,
+        help="Starting AlterID threshold. Omit to resume from the last checkpoint (0 on first run).",
+    ),
+    progress_every: int = typer.Option(100, help="Emit a progress line every N vouchers saved. 0 to disable."),
+) -> None:
+    init_db()
+    progress_cb = _make_voucher_progress_emitter(progress_every) if progress_every > 0 else None
+    with _tally_client() as client, get_session() as session:
+        result = sync_vouchers_by_alterid(
+            session,
+            client,
+            company_name=company,
+            since_alter_id=since_alter_id,
+            voucher_progress_callback=progress_cb,
+        )
+    typer.echo(
+        f"AlterID sync: since={result['since_alter_id']} fetched={result['fetched']} "
+        f"saved={result['saved']} new_max_alter_id={result['max_alter_id']}"
+    )
+    matched = result.get("matched_voucher_types") or []
+    if matched:
+        typer.echo(f"Voucher types touched: {', '.join(matched)}")
 
 
 @command("sync-vouchers-chunked")
@@ -278,8 +323,10 @@ def sync_vouchers_chunked_command(
     min_chunk_days: int = typer.Option(1, help="Smallest window size to try when adaptive splitting is enabled."),
     range_mode: str = typer.Option("collection", help="Range export strategy for dated voucher pulls: collection or daybook."),
     newest_first: bool = typer.Option(True, help="Process the newest windows first so recent data lands before older history."),
+    progress_every: int = typer.Option(100, help="Emit a progress line every N vouchers saved. 0 to disable."),
 ) -> None:
     init_db()
+    progress_cb = _make_voucher_progress_emitter(progress_every) if progress_every > 0 else None
     with _tally_client() as client, get_session() as session:
         results = sync_vouchers_in_chunks(
             session,
@@ -295,6 +342,7 @@ def sync_vouchers_chunked_command(
             range_mode=range_mode,
             newest_first=newest_first,
             progress_callback=_emit_chunk_progress,
+            voucher_progress_callback=progress_cb,
         )
     if not results:
         typer.echo("No windows were processed.")
@@ -312,8 +360,10 @@ def sync_vouchers_incremental_command(
     min_chunk_days: int = typer.Option(1, help="Smallest window size to try when adaptive splitting is enabled."),
     range_mode: str = typer.Option("collection", help="Range export strategy for dated voucher pulls: collection or daybook."),
     newest_first: bool = typer.Option(True, help="Process the newest windows first so recent data lands before older history."),
+    progress_every: int = typer.Option(100, help="Emit a progress line every N vouchers saved. 0 to disable."),
 ) -> None:
     init_db()
+    progress_cb = _make_voucher_progress_emitter(progress_every) if progress_every > 0 else None
     with _tally_client() as client, get_session() as session:
         results = sync_vouchers_incremental(
             session,
@@ -329,6 +379,7 @@ def sync_vouchers_incremental_command(
             range_mode=range_mode,
             newest_first=newest_first,
             progress_callback=_emit_chunk_progress,
+            voucher_progress_callback=progress_cb,
         )
     if not results:
         typer.echo("No windows were processed.")
@@ -382,14 +433,17 @@ def profile_vouchers_chunked_command(
 def sync_standard_vouchers_command(
     company: str = typer.Option(..., help="Exact Tally company name, including FY suffix where applicable."),
     continue_on_error: bool = typer.Option(False, help="Continue even if one voucher family fails."),
+    progress_every: int = typer.Option(100, help="Emit a progress line every N vouchers saved. 0 to disable."),
 ) -> None:
     init_db()
+    progress_cb = _make_voucher_progress_emitter(progress_every) if progress_every > 0 else None
     with _tally_client() as client, get_session() as session:
         results = sync_standard_vouchers(
             session,
             client,
             company_name=company,
             continue_on_error=continue_on_error,
+            voucher_progress_callback=progress_cb,
         )
     for result in results:
         if result.get("error"):
@@ -486,8 +540,10 @@ def sync_company_family_command(
 def sync_all(
     company: str = typer.Option(..., help="Exact Tally company name, including FY suffix where applicable."),
     continue_on_error: bool = typer.Option(False, help="Continue even if one voucher family fails."),
+    progress_every: int = typer.Option(100, help="Emit a progress line every N vouchers saved. 0 to disable."),
 ) -> None:
     init_db()
+    progress_cb = _make_voucher_progress_emitter(progress_every) if progress_every > 0 else None
     with _tally_client() as client, get_session() as session:
         sync_companies(session, client)
         sync_masters(session, client)
@@ -497,6 +553,7 @@ def sync_all(
             client,
             company_name=company,
             continue_on_error=continue_on_error,
+            voucher_progress_callback=progress_cb,
         )
     for result in results:
         if result.get("error"):
@@ -559,6 +616,103 @@ def prune_legacy_global_masters(
     typer.echo(json.dumps(result, indent=2))
 
 
+@command("ledger-prefix-audit")
+def ledger_prefix_audit_command(
+    company: Optional[str] = typer.Option(default=None, help="Restrict to one company. Omit for all."),
+    output: Optional[str] = typer.Option(default=None, help="If given, write results to this CSV path."),
+    summary_only: bool = typer.Option(False, help="Print only the count, not each row."),
+) -> None:
+    init_db()
+    with get_session() as session:
+        if output:
+            result = export_ledger_prefix_mismatches(session, output, company_name=company)
+            typer.echo(f"Wrote {result['row_count']} rows to {result['output_path']}")
+            return
+        rows = find_ledger_prefix_mismatches(session, company_name=company)
+    typer.echo(f"Mismatches: {len(rows)}")
+    if rows:
+        from collections import Counter
+        for co, n in Counter(r["company_name"] for r in rows).most_common():
+            typer.echo(f"  {co}: {n}")
+    if summary_only:
+        return
+    current_company: str | None = None
+    for r in rows:
+        if r["company_name"] != current_company:
+            current_company = r["company_name"]
+            typer.echo(f"--- {current_company} ---")
+        typer.echo(
+            f"  {r['voucher_date']} | {r['voucher_type']:24s} | "
+            f"{r['voucher_number']:22s} | ledger={r['ledger_name']:40s} | amt={r['amount']}"
+        )
+
+
+@command("create-voucher")
+def create_voucher_command(
+    company: Optional[str] = typer.Option(
+        default=None,
+        help="Default Tally company name. Used for any voucher that doesn't specify its own 'company' field.",
+    ),
+    file: str = typer.Option(..., help="Path to a JSON file with a voucher spec, or a list of voucher specs."),
+    dry_run: bool = typer.Option(False, help="Build and print the import request without POSTing to Tally."),
+    continue_on_error: bool = typer.Option(False, help="Keep processing remaining vouchers if one fails."),
+    format: str = typer.Option("xml", help="Import wire format: 'xml' (IMPORTDATA envelope) or 'json' (JSONEx, requires TallyPrime 7.0)."),
+) -> None:
+    if format not in {"xml", "json"}:
+        typer.echo(f"Unknown --format {format!r}; must be 'xml' or 'json'.", err=True)
+        raise typer.Exit(code=1)
+
+    with open(file, "r", encoding="utf-8") as fh:
+        payload = json.load(fh)
+    vouchers = payload if isinstance(payload, list) else [payload]
+
+    any_failed = False
+    with _tally_client() as client:
+        for idx, voucher in enumerate(vouchers, start=1):
+            target_company = voucher.get("company") or company
+            if not target_company:
+                typer.echo(
+                    f"[{idx}] FAIL: no company specified (neither voucher 'company' field nor --company)",
+                    err=True,
+                )
+                if not continue_on_error:
+                    raise typer.Exit(code=1)
+                any_failed = True
+                continue
+
+            if format == "xml":
+                result = client.import_voucher(target_company, voucher, dry_run=dry_run)
+            else:
+                result = client.import_voucher_json(target_company, voucher, dry_run=dry_run)
+
+            if dry_run:
+                typer.echo(f"[{idx}] DRY RUN format={format} company={target_company!r}:")
+                if format == "xml":
+                    typer.echo(result["request_xml"])
+                else:
+                    typer.echo(json.dumps(result["request_payload"], indent=2))
+                continue
+
+            status = "OK" if result["ok"] else "FAIL"
+            typer.echo(
+                f"[{idx}] {status} format={format} company={target_company!r} "
+                f"created={result.get('created', 0)} altered={result.get('altered', 0)} "
+                f"ignored={result.get('ignored', 0)} errors={result.get('errors', 0)} "
+                f"last_vch_id={result.get('last_vch_id')}"
+            )
+            if result.get("line_error"):
+                typer.echo(f"     line_error: {result['line_error']}")
+            exc = result.get("exception") or result.get("exceptions")
+            if exc and str(exc) not in ("0", "None"):
+                typer.echo(f"     exception: {exc}")
+            if not result["ok"]:
+                any_failed = True
+                if not continue_on_error:
+                    raise typer.Exit(code=1)
+    if any_failed:
+        raise typer.Exit(code=1)
+
+
 @command("replay-xml")
 def replay_xml(
     kind: str = typer.Option(
@@ -583,3 +737,35 @@ def replay_bundle(
     with get_session() as session:
         result = replay_xml_bundle(session, directory=directory, company_name=company)
     typer.echo(json.dumps(result, indent=2))
+
+
+@command("policy-load")
+def policy_load_command(
+    file: str = typer.Option(..., help="Path to JSON policy file (see data/sj_policy_avinash.json)."),
+) -> None:
+    """Load / upsert voucher-type -> stock-group policy from a JSON file."""
+    from pathlib import Path
+    from .policy import load_policy_file
+
+    init_db()
+    with get_session() as session:
+        summary = load_policy_file(session, Path(file))
+    typer.echo(json.dumps(summary, indent=2))
+
+
+@command("serve")
+def serve_command(
+    host: str = typer.Option("0.0.0.0", help="Host interface to bind."),
+    port: int = typer.Option(8000, help="Port to listen on."),
+    reload: bool = typer.Option(False, help="Enable auto-reload (development)."),
+) -> None:
+    """Start the production-entry web app."""
+    import uvicorn
+
+    init_db()
+    uvicorn.run(
+        "tally_db_pipeline.webapp.main:app",
+        host=host,
+        port=port,
+        reload=reload,
+    )

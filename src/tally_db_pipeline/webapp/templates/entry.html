@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Entry #{{ entry.id }} — {{ entry.voucher_type }}{% endblock %}
+{% block content %}
+<h1>{{ entry.voucher_type }}
+  <span class="status-badge status-{{ entry.status }}">{{ entry.status }}</span>
+</h1>
+<div class="muted">
+  {{ entry.company_name }} • Date: {{ entry.entry_date }} • Entry #{{ entry.id }} •
+  Remote ID: <code>{{ entry.remote_id }}</code>
+</div>
+
+<form method="post" action="/entries/{{ entry.id }}/save">
+  <div class="card">
+    <label for="narration">Narration</label>
+    <textarea id="narration" name="narration">{{ entry.narration or "" }}</textarea>
+  </div>
+
+  {% macro line_table(lines, role_label, role) %}
+    <div class="card">
+      <h2>{{ role_label }} <span class="muted">({{ lines|length }} items in policy)</span></h2>
+      {% if not lines %}
+        <p class="muted">No items for this role.</p>
+      {% else %}
+      <table>
+        <thead>
+          <tr>
+            <th style="width:30px">#</th>
+            <th>Item</th>
+            <th style="width:80px">UOM</th>
+            <th style="width:100px">Opening stock</th>
+            <th style="width:110px">Quantity</th>
+            <th style="width:100px">Rate</th>
+            <th style="width:160px">Godown</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for l in lines %}
+          <tr class="{% if l.quantity != 0 %}has-qty{% endif %}">
+            <td>{{ loop.index }}</td>
+            <td>{{ l.item_name }}</td>
+            <td>{{ l.uom }}</td>
+            <td style="text-align:right">{{ "%g"|format(l.opening_stock_snapshot) }}</td>
+            <td>
+              <input type="number" step="any" class="qty-input"
+                     name="qty_{{ l.id }}"
+                     value="{% if l.quantity %}{{ '%g'|format(l.quantity) }}{% endif %}">
+            </td>
+            <td>
+              <input type="number" step="any"
+                     name="rate_{{ l.id }}"
+                     value="{% if l.rate %}{{ '%g'|format(l.rate) }}{% endif %}">
+            </td>
+            <td>
+              <input type="text" name="godown_{{ l.id }}" value="{{ l.godown or '' }}">
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+    </div>
+  {% endmacro %}
+
+  {{ line_table(consume_lines, "Consumption (out)", "consume") }}
+  {{ line_table(produce_lines, "Production (in)", "produce") }}
+
+  <div class="card flex-row" style="justify-content: flex-end; gap: 10px;">
+    <button type="submit" name="action" value="save" class="btn-secondary">Save draft</button>
+    <button type="submit" name="action" value="review">Review & post →</button>
+  </div>
+</form>
+{% endblock %}

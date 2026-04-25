@@ -1,0 +1,223 @@
+{% extends "base.html" %}
+{% block title %}All entries{% endblock %}
+{% block content %}
+<style>
+  .entries-layout { display: grid; grid-template-columns: 1fr 260px; gap: 18px; align-items: start; }
+  .entries-layout.collapsed { grid-template-columns: 1fr 44px; }
+  .summary-panel {
+    background: white; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    padding: 12px; position: sticky; top: 12px; max-height: calc(100vh - 40px); overflow-y: auto;
+  }
+  .summary-panel .panel-head {
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 0.8rem; text-transform: uppercase; color: #6b7280;
+    letter-spacing: 0.06em; font-weight: 600; margin-bottom: 8px;
+  }
+  .summary-panel .panel-head button {
+    background: transparent; color: #6b7280; padding: 2px 8px;
+    font-size: 1rem; line-height: 1; border: 1px solid #e5e7eb;
+  }
+  .summary-panel .panel-head button:hover { background: #eef2ff; color: #1a1f2e; }
+  .summary-panel.collapsed { padding: 8px 4px; writing-mode: vertical-rl; transform: rotate(180deg); text-align: center; }
+  .date-btn {
+    display: block; width: 100%; text-align: left; background: transparent; color: #1a1f2e;
+    padding: 7px 10px; margin: 2px 0; border-radius: 5px; font-size: 0.88rem;
+    border: 1px solid transparent;
+  }
+  .date-btn:hover { background: #eef2ff; color: #1a1f2e; }
+  .date-btn.active { background: #4f46e5; color: white; }
+</style>
+
+<h1>All production entries</h1>
+
+<div class="card">
+  <form method="get" action="/entries" class="flex-row">
+    <div style="flex:2">
+      <label>Company</label>
+      <select name="company">
+        <option value="">(all)</option>
+        {% for c in companies %}
+          <option value="{{ c }}" {% if c == selected_company %}selected{% endif %}>{{ c }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div style="flex:1">
+      <label>Date</label>
+      <input type="date" name="entry_date" value="{{ selected_date }}">
+    </div>
+    {% if summary_date %}<input type="hidden" name="summary_date" value="{{ summary_date }}">{% endif %}
+    <div style="margin-top: 28px;">
+      <button type="submit" class="btn-secondary">Filter</button>
+    </div>
+  </form>
+</div>
+
+<div id="entries-grid" class="entries-layout">
+  <div>
+    <div class="card">
+      {% if not entries %}
+        <p class="muted">No entries yet.</p>
+      {% else %}
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Date</th>
+            <th>Voucher type</th>
+            <th>Company</th>
+            <th>Status</th>
+            <th>Tally VCH ID</th>
+            <th>Created</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for e in entries %}
+          <tr>
+            <td>{{ e.id }}</td>
+            <td>{{ e.entry_date|nice_date }}</td>
+            <td>{{ e.voucher_type }}</td>
+            <td>{{ e.company_name }}</td>
+            <td><span class="status-badge status-{{ e.status }}">{{ e.status }}</span></td>
+            <td>{{ e.tally_voucher_number or "" }}</td>
+            <td class="muted">{{ e.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+            <td>
+              {% if e.status in ("draft", "failed") %}
+                <a href="/entries/{{ e.id }}/edit">Edit</a>
+              {% else %}
+                <a href="/entries/{{ e.id }}">View</a>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+    </div>
+
+    {% if summary_date %}
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:16px; margin-bottom:6px">
+        <div>
+          <h2 style="margin:0">Consumption Summary — {{ summary_date|nice_date }}{% if selected_company %} · {{ selected_company }}{% endif %}</h2>
+          {% if summary_meta %}
+          <div class="muted" style="margin-top:4px">
+            {{ summary_meta.voucher_count }} posted voucher{{ '' if summary_meta.voucher_count == 1 else 's' }}
+            · Total consumed value: <b>{{ summary_meta.total_amount|inr }}</b>
+          </div>
+          {% endif %}
+        </div>
+        {% if summary_companies %}
+        <a class="btn" style="white-space:nowrap" target="_blank"
+           href="/summary/print?summary_date={{ summary_date }}{% if selected_company %}&amp;company={{ selected_company|urlencode }}{% endif %}">
+          Print / PDF
+        </a>
+        {% endif %}
+      </div>
+      {% if summary_companies %}
+        {% for co in summary_companies %}
+        <h3 style="margin:18px 0 4px; font-size:1.05rem">{{ co.name }} <span class="muted" style="font-weight:400">· {{ co.voucher_count }} voucher{{ '' if co.voucher_count == 1 else 's' }} · {{ co.subtotal|inr }}</span></h3>
+        {% for g in co.groups %}
+          <h3 style="margin:18px 0 2px; color:#1e3a8a; font-size:1rem">{{ g.voucher_type }}</h3>
+          <div class="muted" style="margin-bottom:6px">
+            {{ g.item_count }} item{{ '' if g.item_count == 1 else 's' }} · Subtotal: <b>{{ g.subtotal|inr }}</b>
+          </div>
+          <table style="table-layout:fixed">
+            <colgroup>
+              <col style="width:40px">
+              <col>
+              <col style="width:90px">
+              <col style="width:55px">
+              <col style="width:120px">
+              <col style="width:140px">
+              <col style="width:170px">
+            </colgroup>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Stock Item</th>
+                <th style="text-align:right">Qty</th>
+                <th>UOM</th>
+                <th style="text-align:right">Unit Rate</th>
+                <th style="text-align:right">Amount</th>
+                <th>Voucher No.</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for r in g.rows %}
+                <tr>
+                  <td>{{ loop.index }}</td>
+                  <td style="overflow-wrap:break-word; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; line-height:1.3" title="{{ r.item_name }}">{{ r.item_name }}</td>
+                  <td style="text-align:right">{{ "%g"|format(r.quantity) }}</td>
+                  <td>{{ r.uom }}</td>
+                  <td style="text-align:right">{% if r.rate_avg %}{{ r.rate_avg|inr }}{% endif %}</td>
+                  <td style="text-align:right">{% if r.amount %}{{ r.amount|inr }}{% endif %}</td>
+                  <td style="word-break:keep-all; overflow-wrap:normal">{{ r.vchs or "—" }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% endfor %}
+        {% endfor %}
+      {% else %}
+        <p class="muted">No posted consumption entries for this date.</p>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+
+  <aside id="summary-panel" class="summary-panel">
+    <div class="panel-head">
+      <span id="panel-title">Summary by Date</span>
+      <button type="button" id="panel-toggle" title="Collapse / expand">‹</button>
+    </div>
+    <div id="panel-body">
+      {% if not all_dates %}
+        <p class="muted">No dates.</p>
+      {% endif %}
+      {% for d in all_dates %}
+        <a class="date-btn {% if d == summary_date %}active{% endif %}"
+           href="/entries?{% if selected_company %}company={{ selected_company|urlencode }}&amp;{% endif %}{% if selected_date %}entry_date={{ selected_date }}&amp;{% endif %}summary_date={{ d }}">
+          {{ d|nice_date }}
+        </a>
+      {% endfor %}
+      {% if summary_date %}
+        <a class="date-btn" style="margin-top:8px; color:#6b7280"
+           href="/entries?{% if selected_company %}company={{ selected_company|urlencode }}&amp;{% endif %}{% if selected_date %}entry_date={{ selected_date }}{% endif %}">
+          ✕ Clear summary
+        </a>
+      {% endif %}
+    </div>
+  </aside>
+</div>
+
+<script>
+  (function() {
+    var grid = document.getElementById('entries-grid');
+    var panel = document.getElementById('summary-panel');
+    var body = document.getElementById('panel-body');
+    var title = document.getElementById('panel-title');
+    var btn = document.getElementById('panel-toggle');
+    var KEY = 'tdp.entries.panelCollapsed';
+    function apply(collapsed) {
+      if (collapsed) {
+        grid.classList.add('collapsed');
+        body.style.display = 'none';
+        title.textContent = '«';
+        btn.textContent = '›';
+      } else {
+        grid.classList.remove('collapsed');
+        body.style.display = '';
+        title.textContent = 'Summary by Date';
+        btn.textContent = '‹';
+      }
+    }
+    apply(localStorage.getItem(KEY) === '1');
+    btn.addEventListener('click', function() {
+      var now = localStorage.getItem(KEY) === '1' ? '0' : '1';
+      localStorage.setItem(KEY, now);
+      apply(now === '1');
+    });
+  })();
+</script>
+{% endblock %}

@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Entry #{{ entry.id }}{% endblock %}
+{% block content %}
+<h1>Entry #{{ entry.id }}
+  <span class="status-badge status-{{ entry.status }}">{{ entry.status }}</span>
+</h1>
+<div class="muted">
+  {{ entry.company_name }} • {{ entry.voucher_type }} • {{ entry.entry_date }}
+  {% if entry.tally_voucher_number %}
+    • Tally VCH ID: <strong>{{ entry.tally_voucher_number }}</strong>
+  {% endif %}
+</div>
+
+{% if entry.status == "posted" %}
+<div class="card" style="border-left: 4px solid #16a34a;">
+  <strong>✓ Posted to Tally</strong> at {{ entry.posted_at.strftime("%Y-%m-%d %H:%M:%S") }} UTC
+  {% if entry.tally_master_id %}<br><span class="muted">Master ID: {{ entry.tally_master_id }}</span>{% endif %}
+</div>
+{% elif entry.status == "failed" %}
+<div class="card" style="border-left: 4px solid #dc2626;">
+  <strong>✗ Failed to post</strong><br>
+  <pre>{{ entry.tally_error }}</pre>
+  <form method="post" action="/entries/{{ entry.id }}/post" style="margin-top:10px;">
+    <a class="btn btn-secondary" href="/entries/{{ entry.id }}/edit">Edit and fix</a>
+    <button type="submit" class="btn-danger">Retry post</button>
+  </form>
+</div>
+{% elif entry.status == "submitted" %}
+<div class="card" style="border-left: 4px solid #2563eb;">
+  <strong>⋯ Submitted</strong> — posting to Tally in progress.
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="section-title">Lines ({{ lines|length }})</div>
+  <table>
+    <thead>
+      <tr>
+        <th>Role</th><th>Item</th><th style="text-align:right">Qty</th>
+        <th>UOM</th><th style="text-align:right">Rate</th>
+        <th style="text-align:right">Amount</th><th>Godown</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for l in lines %}
+      <tr>
+        <td>{{ l.role }}</td>
+        <td>{{ l.item_name }}</td>
+        <td style="text-align:right">{{ "%g"|format(l.quantity) }}</td>
+        <td>{{ l.uom }}</td>
+        <td style="text-align:right">{{ "%g"|format(l.rate) }}</td>
+        <td style="text-align:right">{{ "%.2f"|format(l.amount) }}</td>
+        <td>{{ l.godown or "" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="flex-row" style="gap: 10px;">
+  <a class="btn btn-secondary" href="/entries">All entries</a>
+  <a class="btn" href="/">New entry</a>
+</div>
+{% endblock %}

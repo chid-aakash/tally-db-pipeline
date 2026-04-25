@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}Process Configuration{% endblock %}
+
+{% block content %}
+<style>
+  main { max-width: 1100px; }
+  .pp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
+  .pp-card {
+    background: #fff; border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 16px; box-shadow: var(--shadow-sm);
+    transition: transform var(--t-fast), box-shadow var(--t-fast), border-color var(--t-fast);
+  }
+  .pp-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); border-color: rgba(30,58,138,0.2); }
+  .pp-card h3 { margin: 0 0 6px; color: var(--navy-900); font-size: 1.1rem; }
+  .pp-counts { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; font-size: .88rem; color: var(--ink-soft); margin: 8px 0 12px; }
+  .pp-counts .num { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--navy-800); }
+  .pp-empty { color: var(--muted); font-style: italic; }
+  .pp-filter { display: flex; gap: 10px; align-items: end; margin-bottom: 16px; }
+</style>
+
+<div class="card">
+  <h1 style="margin:0 0 4px">Process Configuration</h1>
+  <p class="muted" style="margin:0">
+    Configure the row catalog used by the Daily Production Report — per company, per line.
+    Add, rename, reorder or deactivate process rows for the production / rejection / rework grids.
+  </p>
+</div>
+
+<div class="card">
+  <form method="get" action="/production/processes" class="pp-filter">
+    <label style="margin:0">Company
+      <select name="company" onchange="this.form.submit()">
+        {% for c in companies %}
+        <option value="{{ c }}" {% if c == selected_company %}selected{% endif %}>{{ c }}</option>
+        {% endfor %}
+      </select>
+    </label>
+  </form>
+
+  <div class="pp-grid">
+    {% for s in line_summaries %}
+    <a class="pp-card" href="/production/processes/{{ s.line }}?company={{ selected_company }}" style="text-decoration:none; color:inherit; display:block;">
+      <h3>Line {{ s.line }}</h3>
+      {% if s.total == 0 %}
+        <p class="pp-empty">No rows configured. Click to set up.</p>
+      {% else %}
+        <div class="pp-counts">
+          {% for sec, label in section_options %}
+            <span>{{ label }}</span><span class="num">{{ s.counts.get(sec, 0) }}</span>
+          {% endfor %}
+          {% if s.inactive %}
+            <span style="color:var(--muted);">Inactive</span><span class="num" style="color:var(--muted);">{{ s.inactive }}</span>
+          {% endif %}
+        </div>
+      {% endif %}
+      <div style="text-align:right; font-size:.85rem; color:var(--navy-700); font-weight:600;">Configure →</div>
+    </a>
+    {% endfor %}
+  </div>
+
+  <div style="margin-top:18px; padding-top:18px; border-top:1px dashed var(--line); display:grid; grid-template-columns: 1fr 1fr; gap: 14px;">
+    <a class="pp-card" href="/production/shift-presets?company={{ selected_company }}"
+       style="text-decoration:none; color:inherit; display:block; background:linear-gradient(135deg, #fff4e6, #fff); border-color:rgba(249,115,22,.18);">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+        <div>
+          <h3 style="margin:0 0 4px;">Shift Presets</h3>
+          <p class="muted" style="margin:0; font-size:.88rem;">
+            Hour-column slots used when creating a new DPR. Edit per shift.
+          </p>
+        </div>
+        <div style="text-align:right;">
+          <div class="pp-counts" style="margin:0;">
+            {% for sh in shift_options %}
+              <span>{{ sh }}</span><span class="num">{{ shift_counts.get(sh, 0) }}</span>
+            {% endfor %}
+          </div>
+          <div style="margin-top:6px; font-size:.85rem; color:var(--orange-500); font-weight:600;">Open shifts →</div>
+        </div>
+      </div>
+    </a>
+
+    <a class="pp-card" href="/production/process-catalog?company={{ selected_company }}"
+       style="text-decoration:none; color:inherit; display:block; background:linear-gradient(135deg, var(--navy-50), #fff); border-color:rgba(30,58,138,.15);">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+        <div>
+          <h3 style="margin:0 0 4px;">Process Catalog</h3>
+          <p class="muted" style="margin:0; font-size:.88rem;">
+            Reusable label / stage / group combos. Define once, apply to any line.
+          </p>
+        </div>
+        <div style="text-align:right;">
+          {% if catalog_total == 0 %}
+          <p class="pp-empty" style="margin:0;">Empty. Click to add.</p>
+          {% else %}
+          <div class="pp-counts" style="margin:0;">
+            {% for sec, label in section_options %}
+              <span>{{ label }}</span><span class="num">{{ catalog_counts.get(sec, 0) }}</span>
+            {% endfor %}
+          </div>
+          {% endif %}
+          <div style="margin-top:6px; font-size:.85rem; color:var(--navy-700); font-weight:600;">Open catalog →</div>
+        </div>
+      </div>
+    </a>
+  </div>
+</div>
+{% endblock %}

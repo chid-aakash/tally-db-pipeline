@@ -1,0 +1,881 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <title>Consumable Policy — Tally Production Entry</title>
+  <link id="favicon" rel="icon" type="image/png" sizes="32x32" href="/static/logos/favicon_aapl_32.png">
+  <link id="favicon-large" rel="icon" type="image/png" sizes="180x180" href="/static/logos/favicon_aapl.png">
+  <link id="apple-icon" rel="apple-touch-icon" sizes="180x180" href="/static/logos/favicon_aapl.png">
+  <script>
+    (function () {
+      var small = ["/static/logos/favicon_aapl_32.png", "/static/logos/favicon_sepl_32.png"];
+      var large = ["/static/logos/favicon_aapl.png",    "/static/logos/favicon_sepl.png"];
+      var i = 0;
+      setInterval(function () {
+        i = (i + 1) % small.length;
+        var t = "?t=" + Date.now();
+        var s = document.getElementById("favicon");
+        var l = document.getElementById("favicon-large");
+        var a = document.getElementById("apple-icon");
+        if (s) s.href = small[i] + t;
+        if (l) l.href = large[i] + t;
+        if (a) a.href = large[i] + t;
+      }, 4000);
+    })();
+  </script>
+  <style>
+    :root {
+      --navy-900:#0f1e45; --navy-800:#1e3a8a; --navy-700:#2743a8; --navy-50:#eef2ff;
+      --orange-500:#f97316; --orange-400:#fb923c;
+      --ink:#111827; --ink-soft:#374151; --muted:#6b7280;
+      --line:#e5e7eb; --surface:#ffffff; --surface-2:#f7f8fc;
+      --radius:10px;
+      --shadow-sm:0 1px 2px rgba(15,30,69,.06),0 1px 3px rgba(15,30,69,.04);
+      --shadow-md:0 6px 18px rgba(15,30,69,.08),0 2px 6px rgba(15,30,69,.05);
+      --t-fast:150ms cubic-bezier(.2,.7,.3,1);
+      --t-med:280ms cubic-bezier(.2,.7,.3,1);
+    }
+    * { box-sizing: border-box; }
+    html, body { height:100%; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+      margin: 0; color: var(--ink); background: var(--surface-2);
+      -webkit-font-smoothing: antialiased; overflow-x: hidden;
+    }
+    .bg-stage { position: fixed; inset:0; z-index:-1; overflow: hidden;
+      background:
+        radial-gradient(1200px 800px at 110% -10%, rgba(249,115,22,.08), transparent 60%),
+        radial-gradient(900px 700px at -10% 110%, rgba(30,58,138,.10), transparent 60%),
+        linear-gradient(180deg,#fbfbff 0%,#f2f4fb 100%);
+    }
+    .blob { position:absolute; border-radius:50%; filter:blur(60px); opacity:.35;
+      animation: float 22s ease-in-out infinite; will-change: transform; }
+    .blob.b1 { width:420px; height:420px; top:-120px; left:-80px;
+      background: radial-gradient(circle at 30% 30%, #93c5fd, transparent 60%); }
+    .blob.b2 { width:360px; height:360px; bottom:-100px; right:-60px;
+      background: radial-gradient(circle at 60% 40%, #fdba74, transparent 60%);
+      animation-delay:-8s; animation-duration:28s; }
+    .blob.b3 { width:300px; height:300px; top:40%; left:55%;
+      background: radial-gradient(circle at 50% 50%, #c7d2fe, transparent 60%);
+      animation-delay:-14s; animation-duration:32s; opacity:.25; }
+    @keyframes float {
+      0%,100% { transform: translate(0,0) scale(1); }
+      33%     { transform: translate(40px,-30px) scale(1.05); }
+      66%     { transform: translate(-30px,20px) scale(.96); }
+    }
+
+    header {
+      position: sticky; top:0; z-index:10;
+      background: linear-gradient(135deg, var(--navy-900) 0%, var(--navy-800) 60%, var(--navy-700) 100%);
+      color: #fff; padding: 12px 20px;
+      display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
+      box-shadow: 0 4px 18px rgba(15,30,69,.18);
+    }
+    header::after {
+      content:""; position:absolute; left:0; right:0; bottom:-2px; height:2px;
+      background: linear-gradient(90deg, transparent, var(--orange-500), transparent);
+      background-size: 200% 100%;
+      animation: shimmer 6s linear infinite;
+    }
+    @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+    header .brand {
+      font-weight:700; letter-spacing:.2px;
+      display:inline-flex; align-items:center; gap:12px;
+    }
+    .brand-logo {
+      position: relative; flex: 0 0 42px;
+      width: 42px; height: 42px;
+      border-radius: 50%; background:#fff; overflow: hidden;
+      box-shadow: 0 2px 10px rgba(249,115,22,.35), 0 0 0 2px rgba(255,255,255,.18);
+      perspective: 700px;
+    }
+    .brand-logo::after {
+      content:""; position:absolute; inset:-5px; border-radius:50%;
+      border:1px dashed rgba(255,255,255,.25);
+      animation: logo-ring 9s linear infinite; pointer-events:none;
+    }
+    .brand-logo .face {
+      position:absolute; inset:5px;
+      background-repeat: no-repeat; background-position: center center; background-size: contain;
+      backface-visibility: hidden; -webkit-backface-visibility: hidden;
+      animation: logo-flip 8s ease-in-out infinite; will-change: transform;
+    }
+    .brand-logo .face.a { background-image: url("/static/logos/aapl_icon.png"); }
+    .brand-logo .face.b { background-image: url("/static/logos/sepl_icon.png"); animation-delay: -4s; }
+    @keyframes logo-flip {
+      0%   { transform: rotateY(0deg); }
+      42%  { transform: rotateY(0deg); }
+      50%  { transform: rotateY(180deg); }
+      92%  { transform: rotateY(180deg); }
+      100% { transform: rotateY(360deg); }
+    }
+    @keyframes logo-ring {
+      0%   { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    /* Hamburger — lives inside the blue header, to the left of the logo. */
+    .menu-btn {
+      background: rgba(255,255,255,.10);
+      color: #fff; cursor: pointer;
+      border: 1px solid rgba(255,255,255,.28);
+      width: 48px; height: 48px; border-radius: 10px;
+      display: inline-flex; align-items: center; justify-content: center;
+      box-shadow: none;
+      transition: background var(--t-fast), transform var(--t-fast);
+    }
+    .menu-btn:hover { background: rgba(255,255,255,.18); transform: none; filter: none; box-shadow: none; }
+    .menu-btn:active { transform: scale(.96); }
+    .menu-btn svg { width: 30px; height: 30px; pointer-events: none; display: block; stroke: currentColor; }
+    .drawer-overlay {
+      position: fixed; inset: 0;
+      background: rgba(5,10,25,.55); backdrop-filter: blur(2px);
+      z-index: 100; opacity: 0; pointer-events: none;
+      transition: opacity var(--t-med);
+    }
+    .drawer-overlay.open { opacity: 1; pointer-events: auto; }
+    .drawer {
+      position: fixed; top: 0; left: 0; bottom: 0;
+      width: 320px; max-width: 86vw;
+      background: linear-gradient(180deg, #0a163b 0%, #15296b 100%);
+      color: #fff; z-index: 101;
+      transform: translateX(-105%);
+      transition: transform var(--t-med);
+      box-shadow: 12px 0 40px rgba(0,0,0,.45);
+      display: flex; flex-direction: column;
+      padding: 14px 0;
+    }
+    .drawer.open { transform: translateX(0); }
+    .drawer-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 4px 16px 14px;
+      border-bottom: 1px solid rgba(255,255,255,.08);
+      margin-bottom: 8px;
+    }
+    .drawer-logo { position: relative; width: 36px; height: 36px; border-radius: 50%;
+      background: #fff; overflow: hidden;
+      box-shadow: 0 2px 10px rgba(249,115,22,.35); }
+    .drawer-logo .face { position: absolute; inset: 4px;
+      background-repeat: no-repeat; background-position: center; background-size: contain;
+      backface-visibility: hidden;
+      animation: logo-flip 8s ease-in-out infinite; }
+    .drawer-logo .face.a { background-image: url("/static/logos/aapl_icon.png"); }
+    .drawer-logo .face.b { background-image: url("/static/logos/sepl_icon.png"); animation-delay: -4s; }
+    .drawer-close {
+      background: transparent; border: none; color: #cbd5e1; cursor: pointer;
+      width: 36px; height: 36px; border-radius: 8px;
+      display: inline-flex; align-items: center; justify-content: center;
+      box-shadow: none;
+    }
+    .drawer-close:hover { background: rgba(255,255,255,.08); color: #fff; transform: none; filter: none; }
+    .drawer-close svg { width: 18px; height: 18px; }
+    .drawer-link {
+      display: flex; align-items: center; gap: 14px;
+      padding: 12px 20px; color: #dbe3f3;
+      text-decoration: none;
+      background: transparent; border: none; box-shadow: none;
+      font-size: 1rem; font-family: inherit; font-weight: 500;
+      cursor: pointer; text-align: left; width: 100%;
+      transition: background var(--t-fast), color var(--t-fast), transform var(--t-fast);
+    }
+    .drawer-link:hover { background: rgba(255,255,255,.08); color: #fff; transform: translateX(2px); filter: none; box-shadow: none; }
+    .drawer-link svg { width: 20px; height: 20px; flex: 0 0 20px; opacity: .9; }
+    .drawer-sep { height: 1px; background: rgba(255,255,255,.08); margin: 8px 16px; }
+
+    main {
+      padding: 22px 20px 40px; max-width: 1400px; margin: 0 auto;
+      animation: page-in 420ms cubic-bezier(.2,.7,.3,1) both;
+    }
+    @keyframes page-in { from { opacity:0; transform: translateY(6px); } to { opacity:1; transform: none; } }
+    h1 { margin: 0 0 16px; font-size: 1.45rem; color: var(--navy-900); letter-spacing:-.2px; }
+    .card {
+      background: var(--surface); padding: 18px;
+      border: 1px solid rgba(30,58,138,.06);
+      border-radius: var(--radius); box-shadow: var(--shadow-sm);
+      margin-bottom: 16px;
+      transition: box-shadow var(--t-med), border-color var(--t-med);
+    }
+    .card:hover { box-shadow: var(--shadow-md); border-color: rgba(30,58,138,.12); }
+    label { display: block; margin: 8px 0 4px; font-weight: 500; font-size: .88rem; color: var(--ink-soft); }
+    select, input[type=text] {
+      width: 100%; padding: 9px 11px; border: 1px solid var(--line);
+      border-radius: 8px; font-size: .92rem; font-family: inherit;
+      background: #fff; color: var(--ink);
+      transition: border-color var(--t-fast), box-shadow var(--t-fast);
+    }
+    select:focus, input[type=text]:focus {
+      outline: none; border-color: var(--navy-700);
+      box-shadow: 0 0 0 3px rgba(30,58,138,.15);
+    }
+    select[multiple] {
+      padding: 4px;
+      background: #fff;
+      min-height: 110px;
+    }
+    select[multiple] option {
+      padding: 6px 8px; border-radius: 6px;
+    }
+    select[multiple] option:checked {
+      background: linear-gradient(180deg, #2747a5, var(--navy-800));
+      color: #fff;
+    }
+    select[disabled] { background: #f3f4f6; color: var(--muted); }
+    button {
+      background: linear-gradient(180deg, #2747a5, var(--navy-800));
+      color: #fff; border: none;
+      padding: 9px 16px; border-radius: 8px; cursor: pointer;
+      font-size: .9rem; font-weight: 500; font-family: inherit;
+      box-shadow: 0 1px 2px rgba(15,30,69,.15);
+      transition: transform var(--t-fast), box-shadow var(--t-fast), filter var(--t-fast);
+    }
+    button:hover { filter: brightness(1.06); transform: translateY(-1px); box-shadow: var(--shadow-md); }
+    button:active { transform: translateY(0); filter: brightness(.98); }
+    button.secondary { background: linear-gradient(180deg, #7b8494, #5b6472); }
+    button.danger    { background: linear-gradient(180deg, #ef4444, #b91c1c); }
+    .grid { display: grid; grid-template-columns: 360px 1fr; gap: 14px; align-items: start; }
+    .panel-head {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 8px;
+    }
+    .panel-head h2 { margin: 0; font-size: 1rem; color: #374151; }
+    .tree { max-height: 65vh; overflow-y: auto; font-size: 0.88rem; }
+    .tree-node { padding: 2px 0; }
+    .tree-row {
+      display: flex; align-items: center; gap: 6px;
+      padding: 3px 6px; border-radius: 4px; cursor: grab;
+    }
+    .tree-row:hover { background: #eef2ff; }
+    .tree-row.dragging { opacity: 0.4; }
+    .tree-caret {
+      width: 14px; display: inline-block; cursor: pointer; user-select: none;
+      color: #6b7280; font-size: 0.85rem;
+    }
+    .tree-caret.leaf { visibility: hidden; }
+    .tree-kids { padding-left: 18px; }
+    .tree-kids.collapsed { display: none; }
+    .tree-name { flex: 1; }
+    .tree-name.assigned { color: #9ca3af; text-decoration: line-through; }
+    .tree-row.foreign { cursor: pointer; }
+    .tree-row.foreign[draggable="false"] { cursor: pointer; }
+    .tree-name.foreign { color: #dc2626; font-weight: 500; }
+    .tree-name.foreign:hover { text-decoration: underline; }
+    .foreign-hint { color: #dc2626; font-size: 0.72rem; margin-left: 6px; }
+    .drop-zones { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .drop-zone {
+      background: white; border: 2px dashed #d1d5db; border-radius: 8px;
+      padding: 14px; min-height: 380px;
+    }
+    .drop-zone.consume { border-color: #f59e0b; }
+    .drop-zone.produce { border-color: #16a34a; }
+    .drop-zone.drag-over { background: #eff6ff; border-style: solid; }
+    .drop-zone h3 { margin: 0 0 8px; font-size: 1rem; }
+    .drop-zone.consume h3 { color: #b45309; }
+    .drop-zone.produce h3 { color: #166534; }
+    .chip {
+      display: flex; justify-content: space-between; align-items: center;
+      background: #f3f4f6; border-radius: 6px; padding: 6px 10px;
+      margin-bottom: 6px; font-size: 0.88rem;
+    }
+    .chip-name { font-weight: 500; }
+    .chip-godown {
+      font-size: 0.75rem; color: #6b7280; margin-left: 8px;
+    }
+    .chip input {
+      width: 150px; padding: 3px 6px; font-size: 0.78rem; margin-left: 8px;
+    }
+    .chip button.x {
+      background: transparent; color: #dc2626; padding: 0 6px; font-size: 1.1rem;
+    }
+    .chip button.x:hover { background: #fee2e2; }
+    .banner {
+      padding: 10px 12px; border-radius: 6px; margin: 10px 0;
+      border: 1px solid transparent; font-size: 0.88rem;
+    }
+    .banner-info { background: #eff6ff; border-color: #2563eb; color: #1e40af; }
+    .banner-success { background: #f0fdf4; border-color: #16a34a; color: #166534; }
+    .banner-error { background: #fef2f2; border-color: #dc2626; color: #991b1b; }
+    .muted { color: #6b7280; font-size: 0.82rem; }
+    .action-bar {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-top: 14px; padding-top: 12px; border-top: 1px solid #e5e7eb;
+    }
+    .tree-filter {
+      width: 100%; padding: 8px 11px; margin-bottom: 8px;
+      border: 1px solid var(--line); border-radius: 8px; font-size: .88rem;
+      transition: border-color var(--t-fast), box-shadow var(--t-fast);
+    }
+    .tree-filter:focus { outline:none; border-color: var(--navy-700); box-shadow: 0 0 0 3px rgba(30,58,138,.15); }
+
+    /* Responsive */
+    @media (max-width: 1024px) {
+      .grid { grid-template-columns: 1fr; }
+      .tree { max-height: 45vh; }
+    }
+    @media (max-width: 640px) {
+      header { padding: 10px 14px; }
+      header nav { width:100%; }
+      header nav a { padding: 7px 10px; font-size: .88rem; margin-left: 0; }
+      main { padding: 14px 12px 28px; }
+      h1 { font-size: 1.2rem; }
+      .card { padding: 14px; }
+      .drop-zones { grid-template-columns: 1fr; }
+      .drop-zone { min-height: 240px; }
+      button { padding: 10px 14px; font-size: .95rem; }
+      select, input[type=text] { font-size: 16px; } /* no iOS zoom */
+      .blob { filter: blur(40px); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="bg-stage" aria-hidden="true">
+    <div class="blob b1"></div>
+    <div class="blob b2"></div>
+    <div class="blob b3"></div>
+  </div>
+  <header>
+    <div class="brand">
+      <button id="menu-btn" class="menu-btn" aria-label="Open menu" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
+      <span class="brand-logo" aria-hidden="true">
+        <span class="face a"></span>
+        <span class="face b"></span>
+      </span>
+      Tally Production Entry
+    </div>
+  </header>
+  <div id="drawer-overlay" class="drawer-overlay" aria-hidden="true"></div>
+  <aside id="drawer" class="drawer" role="dialog" aria-label="Main menu">
+    <div class="drawer-head">
+      <span class="drawer-logo" aria-hidden="true">
+        <span class="face a"></span>
+        <span class="face b"></span>
+      </span>
+      <button id="drawer-close" class="drawer-close" aria-label="Close menu">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <a class="drawer-link" href="/app">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5z"/><path d="M14 3v5h5M12 12v6M9 15h6"/></svg>
+      <span>New entry</span>
+    </a>
+    <a class="drawer-link" href="/entries">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="4" cy="6" r="1.4"/><circle cx="4" cy="12" r="1.4"/><circle cx="4" cy="18" r="1.4"/></svg>
+      <span>All entries</span>
+    </a>
+    <div class="drawer-sep"></div>
+    <a class="drawer-link" href="/policies">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 4v6c0 5-3.5 9.5-8 10-4.5-.5-8-5-8-10V6l8-4z"/><path d="M9 12l2 2 4-4"/></svg>
+      <span>Policies</span>
+    </a>
+  </aside>
+  <main>
+    <h1>Consumable Policy — Voucher Type — Stock Mapping</h1>
+
+    <div class="card">
+      <div style="display:grid; grid-template-columns: 1fr 1fr auto; gap:12px; align-items:end">
+        <div>
+          <label>Company</label>
+          <select id="company-select"></select>
+        </div>
+        <div>
+          <label>Voucher Type (from Tally)</label>
+          <select id="vt-select">
+            <option value="">(pick a voucher type)</option>
+          </select>
+        </div>
+        <button id="load-btn">Load</button>
+      </div>
+      <div id="company-default-row" style="display:none; margin-top:12px; padding-top:10px; border-top:1px solid #e5e7eb; display:flex; align-items:flex-end; gap:10px">
+        <div style="flex:1; max-width:420px">
+          <label>Default godown for this company (auto-fills empty chips when a policy is loaded)</label>
+          <select id="company-default-godown"></select>
+        </div>
+        <button id="save-company-default" class="secondary">Save default</button>
+        <span id="company-default-status" class="muted"></span>
+      </div>
+      <div id="banner" class="muted" style="margin-top:10px">Select a company to begin.</div>
+    </div>
+
+    <div id="editor" style="display:none">
+      <div class="grid">
+        <div class="card">
+          <div class="panel-head">
+            <h2>Stock Groups</h2>
+            <span class="muted" id="tree-count"></span>
+          </div>
+          <input class="tree-filter" id="tree-filter" placeholder="Search group…">
+          <div class="tree" id="tree"></div>
+          <div class="muted" style="margin-top:8px">Drag a group onto Consume or Produce.</div>
+        </div>
+
+        <div>
+          <div class="drop-zones">
+            <div class="drop-zone consume" data-role="consume">
+              <h3>Consume (source)</h3>
+              <div id="consume-list"></div>
+              <div class="muted" id="consume-empty">Drop stock groups here</div>
+            </div>
+            <div class="drop-zone produce" data-role="produce">
+              <h3>Produce (destination)</h3>
+              <div id="produce-list"></div>
+              <div class="muted" id="produce-empty">Drop stock groups here</div>
+            </div>
+          </div>
+
+          <div class="action-bar">
+            <div>
+              <button class="danger" id="delete-btn" style="display:none">Delete policy</button>
+            </div>
+            <div>
+              <button class="secondary" id="reset-btn">Reset changes</button>
+              <button id="save-btn">Save policy</button>
+            </div>
+          </div>
+          <div id="save-banner"></div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let state = {
+  company: "",
+  voucherType: "",
+  tree: [],        // stock group tree
+  original: [],    // original group rows from the policy
+  assignments: [], // [{stock_group, role, default_godown}, ...]
+  exists: false,
+  usage: {},       // { stock_group: [{voucher_type, role}, ...] } — all policies in this company
+  godowns: [],     // [{name, parent}, ...]
+  companyDefaultGodown: "", // fallback fill for empty chips
+};
+
+const assignedGroups = () => new Set(state.assignments.map(a => a.stock_group));
+const groupRoleExists = (name, role) => state.assignments.some(a => a.stock_group === name && a.role === role);
+
+const draftKey = (company, vt) => `tdp.policy.draft::${company}::${vt}`;
+function saveDraft() {
+  if (!state.company || !state.voucherType) return;
+  localStorage.setItem(
+    draftKey(state.company, state.voucherType),
+    JSON.stringify({ assignments: state.assignments, saved_at: new Date().toISOString() })
+  );
+}
+function readDraft(company, vt) {
+  const raw = localStorage.getItem(draftKey(company, vt));
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
+}
+function clearDraft(company, vt) {
+  localStorage.removeItem(draftKey(company, vt));
+}
+
+async function fetchJSON(url, opts) {
+  const r = await fetch(url, opts);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+async function init() {
+  const d = await fetchJSON("/api/all-companies");
+  const sel = $("company-select");
+  sel.innerHTML = '<option value="">(pick a company)</option>' +
+    d.companies.map(c => `<option>${escapeHtml(c)}</option>`).join("");
+  sel.onchange = onCompanyChange;
+  $("load-btn").onclick = onLoadClick;
+
+  $("tree-filter").oninput = renderTree;
+  $("save-btn").onclick = savePolicy;
+  $("reset-btn").onclick = () => loadPolicy();
+  $("delete-btn").onclick = deletePolicy;
+  $("save-company-default").onclick = saveCompanyDefault;
+  $("company-default-godown").onchange = (e) => {
+    state.companyDefaultGodown = e.target.value;
+    $("company-default-status").textContent = "unsaved";
+  };
+  document.querySelectorAll(".drop-zone").forEach(z => {
+    z.addEventListener("dragover", e => { e.preventDefault(); z.classList.add("drag-over"); });
+    z.addEventListener("dragleave", () => z.classList.remove("drag-over"));
+    z.addEventListener("drop", onDrop);
+  });
+}
+
+function escapeHtml(s) {
+  return (s || "").replace(/[&<>"']/g, m => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[m]));
+}
+
+async function onCompanyChange() {
+  state.company = $("company-select").value;
+  state.assignments = [];
+  state.tree = [];
+  $("editor").style.display = "none";
+  if (!state.company) {
+    $("banner").textContent = "Select a company to begin.";
+    return;
+  }
+  $("banner").textContent = "Loading…";
+  const [vts, tree, godowns, cdg] = await Promise.all([
+    fetchJSON(`/api/tally-voucher-types?company=${encodeURIComponent(state.company)}`),
+    fetchJSON(`/api/stock-group-tree?company=${encodeURIComponent(state.company)}`),
+    fetchJSON(`/api/godowns?company=${encodeURIComponent(state.company)}`),
+    fetchJSON(`/api/company-default-godown?company=${encodeURIComponent(state.company)}`),
+  ]);
+  state.godowns = (godowns.godowns || []).filter(g => g.name);
+  state.companyDefaultGodown = cdg.default_godown || "";
+  const cdgSel = $("company-default-godown");
+  cdgSel.innerHTML = '<option value="">(none)</option>' +
+    state.godowns.map(g => `<option value="${escapeHtml(g.name)}"${g.name === state.companyDefaultGodown ? " selected" : ""}>${escapeHtml(g.name)}</option>`).join("");
+  $("company-default-row").style.display = "flex";
+  const vtSel = $("vt-select");
+  vtSel.innerHTML = '<option value="">(pick a voucher type)</option>' +
+    vts.voucher_types.map(v => {
+      const mark = v.has_policy ? " ✓" : "";
+      return `<option value="${escapeHtml(v.name)}">${escapeHtml(v.name)}${mark}</option>`;
+    }).join("");
+  state.tree = tree.tree;
+  $("tree-count").textContent = `${countNodes(tree.tree)} groups`;
+  const withPolicy = vts.voucher_types.filter(v => v.has_policy).length;
+  $("banner").textContent = vts.voucher_types.length
+    ? `${vts.voucher_types.length} voucher types synced from Tally (${withPolicy} have a policy — marked ✓).`
+    : "No voucher types synced yet. Run the Tally sync first.";
+}
+
+function countNodes(nodes) {
+  let n = 0;
+  for (const x of nodes) { n++; n += countNodes(x.children || []); }
+  return n;
+}
+
+async function onLoadClick() {
+  const vt = $("vt-select").value;
+  if (!state.company) return alert("Pick a company first");
+  if (!vt) return alert("Pick a voucher type");
+  state.voucherType = vt;
+  await loadPolicy();
+}
+
+async function loadPolicy() {
+  $("editor").style.display = "";
+  const [d, usage] = await Promise.all([
+    fetchJSON(`/api/policy?company=${encodeURIComponent(state.company)}&voucher_type=${encodeURIComponent(state.voucherType)}`),
+    fetchJSON(`/api/policy-group-usage?company=${encodeURIComponent(state.company)}`),
+  ]);
+  state.exists = d.exists;
+  state.original = d.groups || [];
+  state.usage = usage.usage || {};
+
+  // If a local draft exists for this (company, voucher_type), offer to restore.
+  const draft = readDraft(state.company, state.voucherType);
+  let restored = false;
+  if (draft && Array.isArray(draft.assignments)) {
+    const savedAt = draft.saved_at ? new Date(draft.saved_at).toLocaleString() : "";
+    if (confirm(`A local draft for "${state.voucherType}" was saved at ${savedAt}. Restore it?\n\nOK = restore draft, Cancel = discard draft and load saved policy.`)) {
+      state.assignments = draft.assignments;
+      restored = true;
+    } else {
+      clearDraft(state.company, state.voucherType);
+    }
+  }
+  if (!restored) {
+    state.assignments = (state.original || []).map(g => ({
+      stock_group: g.stock_group,
+      role: g.role,
+      default_godown: g.default_godown || "",
+    }));
+  }
+  // Auto-fill blank godowns with the company default (only the blank ones).
+  if (state.companyDefaultGodown) {
+    let filled = 0;
+    for (const a of state.assignments) {
+      if (!a.default_godown) { a.default_godown = state.companyDefaultGodown; filled++; }
+    }
+    if (filled > 0) {
+      $("save-banner").innerHTML = `<div class="banner banner-info">${filled} chip${filled === 1 ? "" : "s"} auto-filled with company default "${escapeHtml(state.companyDefaultGodown)}". Click Save to persist.</div>`;
+    }
+  }
+  $("delete-btn").style.display = state.exists ? "" : "none";
+  $("save-banner").innerHTML = restored
+    ? `<div class="banner banner-info">Restored from local draft — click Save to persist.</div>`
+    : "";
+  renderTree();
+  renderZones();
+}
+
+function foreignAssignment(name) {
+  // Returns a {voucher_type, role} for the FIRST assignment in this company
+  // that isn't the current voucher-type; null otherwise.
+  const arr = state.usage[name] || [];
+  for (const a of arr) {
+    if (a.voucher_type !== state.voucherType) return a;
+  }
+  return null;
+}
+
+async function switchToVoucherType(vt) {
+  // Stash current edits as a local draft, switch, reload.
+  saveDraft();
+  state.voucherType = vt;
+  $("vt-select").value = vt;
+  await loadPolicy();
+}
+
+function renderTree() {
+  const filter = $("tree-filter").value.trim().toLowerCase();
+  const matches = (name) => !filter || name.toLowerCase().includes(filter);
+  const hasMatchDeep = (node) => matches(node.name) || (node.children || []).some(hasMatchDeep);
+  const root = $("tree");
+  // Preserve scroll position and which groups are collapsed across re-renders.
+  const prevScroll = root.scrollTop;
+  if (!window.__collapsedSet) window.__collapsedSet = new Set();
+  const collapsedSet = window.__collapsedSet;
+  // Snapshot current DOM's collapsed state before wiping.
+  root.querySelectorAll(".tree-node").forEach(n => {
+    const nm = n.querySelector(".tree-row")?.dataset?.name;
+    const kids = n.querySelector(".tree-kids");
+    if (nm && kids) {
+      if (kids.classList.contains("collapsed")) collapsedSet.add(nm);
+      else collapsedSet.delete(nm);
+    }
+  });
+  root.innerHTML = "";
+  const render = (node, parent) => {
+    if (filter && !hasMatchDeep(node)) return;
+    const div = document.createElement("div");
+    div.className = "tree-node";
+    const row = document.createElement("div");
+    row.className = "tree-row";
+    row.dataset.name = node.name;
+    const foreign = foreignAssignment(node.name);
+    const selfAssigned = assignedGroups().has(node.name);
+    const selfRoles = state.assignments.filter(a => a.stock_group === node.name).map(a => a.role);
+    if (foreign) {
+      row.classList.add("foreign");
+      row.draggable = false;
+      row.title = `Assigned to "${foreign.voucher_type}" (${foreign.role}). Click the name to switch.`;
+    } else {
+      row.draggable = true;
+      row.addEventListener("dragstart", (e) => {
+        e.dataTransfer.setData("text/plain", node.name);
+        row.classList.add("dragging");
+      });
+      row.addEventListener("dragend", () => row.classList.remove("dragging"));
+    }
+    const caret = document.createElement("span");
+    caret.className = "tree-caret" + ((node.children || []).length ? "" : " leaf");
+    caret.textContent = (node.children || []).length ? "▾" : "•";
+    const name = document.createElement("span");
+    name.className = "tree-name";
+    if (selfAssigned) {
+      name.classList.add("assigned");
+      name.title = `Already assigned as ${selfRoles.join(", ")} on this voucher type`;
+    } else if (foreign) {
+      name.classList.add("foreign");
+      name.style.cursor = "pointer";
+      name.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (confirm(`"${node.name}" is assigned to "${foreign.voucher_type}".\n\nSwitch to that policy? Your current changes will be saved as a local draft.`)) {
+          switchToVoucherType(foreign.voucher_type);
+        }
+      });
+    }
+    name.textContent = node.name;
+    row.appendChild(caret);
+    row.appendChild(name);
+    if (foreign) {
+      const hint = document.createElement("span");
+      hint.className = "foreign-hint";
+      hint.textContent = `→ ${foreign.voucher_type}`;
+      hint.style.cursor = "pointer";
+      hint.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (confirm(`"${node.name}" is assigned to "${foreign.voucher_type}".\n\nSwitch to that policy? Your current changes will be saved as a local draft.`)) {
+          switchToVoucherType(foreign.voucher_type);
+        }
+      });
+      row.appendChild(hint);
+    }
+    div.appendChild(row);
+
+    if ((node.children || []).length) {
+      const kids = document.createElement("div");
+      kids.className = "tree-kids";
+      // Restore collapsed state (but auto-expand while a filter is active).
+      if (!filter && collapsedSet.has(node.name)) {
+        kids.classList.add("collapsed");
+      }
+      caret.onclick = (e) => {
+        e.stopPropagation();
+        kids.classList.toggle("collapsed");
+        if (kids.classList.contains("collapsed")) collapsedSet.add(node.name);
+        else collapsedSet.delete(node.name);
+      };
+      for (const c of node.children) render(c, kids);
+      div.appendChild(kids);
+    }
+    parent.appendChild(div);
+  };
+  for (const n of state.tree) render(n, root);
+  root.scrollTop = prevScroll;
+}
+
+function onDrop(e) {
+  e.preventDefault();
+  e.currentTarget.classList.remove("drag-over");
+  const name = e.dataTransfer.getData("text/plain");
+  if (!name) return;
+  if (foreignAssignment(name)) {
+    alert(`"${name}" is already assigned to another voucher type. Remove it there first.`);
+    return;
+  }
+  const role = e.currentTarget.dataset.role;
+  if (groupRoleExists(name, role)) {
+    alert(`"${name}" is already in ${role}. Click the + next to the chip to add it again with a different godown.`);
+    return;
+  }
+  state.assignments.push({ stock_group: name, role, default_godown: "" });
+  saveDraft();
+  renderTree();
+  renderZones();
+}
+
+function renderZones() {
+  const godownOptions = (selected) =>
+    '<option value="">(pick godown)</option>' +
+    state.godowns.map(g =>
+      `<option value="${escapeHtml(g.name)}"${g.name === selected ? " selected" : ""}>${escapeHtml(g.name)}</option>`
+    ).join("");
+  for (const role of ["consume", "produce"]) {
+    const list = $(`${role}-list`);
+    list.innerHTML = "";
+    // Build sorted index list for this role.
+    const indexed = state.assignments
+      .map((a, idx) => ({ a, idx }))
+      .filter(({ a }) => a.role === role)
+      .sort((x, y) => x.a.stock_group.localeCompare(y.a.stock_group));
+    $(`${role}-empty`).style.display = indexed.length ? "none" : "";
+    for (const { a, idx } of indexed) {
+      const chip = document.createElement("div");
+      chip.className = "chip";
+      chip.innerHTML = `
+        <span class="chip-name">${escapeHtml(a.stock_group)}</span>
+        <span style="display:flex; align-items:center; gap:4px">
+          <select onchange="onGodown(${idx}, this.value)">${godownOptions(a.default_godown || "")}</select>
+          <button class="x" title="Duplicate with a different godown" onclick="duplicateAssign(${idx})" style="color:#2563eb">＋</button>
+          <button class="x" title="Remove" onclick="removeAssign(${idx})">×</button>
+        </span>
+      `;
+      list.appendChild(chip);
+    }
+  }
+}
+
+window.onGodown = (idx, val) => {
+  if (state.assignments[idx]) state.assignments[idx].default_godown = val;
+  saveDraft();
+};
+window.removeAssign = (idx) => {
+  state.assignments.splice(idx, 1);
+  saveDraft();
+  renderTree();
+  renderZones();
+};
+window.duplicateAssign = (idx) => {
+  const src = state.assignments[idx];
+  if (!src) return;
+  state.assignments.push({ stock_group: src.stock_group, role: src.role, default_godown: "" });
+  saveDraft();
+  renderZones();
+};
+
+async function savePolicy() {
+  const groups = state.assignments.map(a => ({
+    stock_group: a.stock_group, role: a.role, default_godown: a.default_godown || null,
+  }));
+  if (!groups.length) {
+    if (!confirm("Save with no groups? The policy will be effectively empty.")) return;
+  }
+  $("save-banner").innerHTML = "";
+  try {
+    const r = await fetchJSON("/api/policy", {
+      method: "PUT",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        company: state.company,
+        voucher_type: state.voucherType,
+        strict: true,
+        rate_policy: "stock_master",
+        active: true,
+        groups,
+      }),
+    });
+    state.exists = true;
+    $("delete-btn").style.display = "";
+    clearDraft(state.company, state.voucherType);
+    // Refresh usage map so newly-saved groups mark correctly when switching voucher types next time.
+    const usage = await fetchJSON(`/api/policy-group-usage?company=${encodeURIComponent(state.company)}`);
+    state.usage = usage.usage || {};
+    renderTree();
+    $("save-banner").innerHTML = `<div class="banner banner-success">Saved ${escapeHtml(r.voucher_type)} with ${r.group_count} group${r.group_count === 1 ? "" : "s"}.</div>`;
+  } catch (e) {
+    $("save-banner").innerHTML = `<div class="banner banner-error">Save failed: ${escapeHtml(String(e))}</div>`;
+  }
+}
+
+async function saveCompanyDefault() {
+  try {
+    const r = await fetchJSON("/api/company-default-godown", {
+      method: "PUT",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ company: state.company, default_godown: state.companyDefaultGodown || null }),
+    });
+    $("company-default-status").textContent = r.default_godown ? `saved: ${r.default_godown}` : "cleared";
+  } catch (e) {
+    $("company-default-status").textContent = "save failed";
+  }
+}
+
+async function deletePolicy() {
+  if (!confirm(`Delete policy "${state.voucherType}"? This cannot be undone.`)) return;
+  try {
+    await fetchJSON(
+      `/api/policy?company=${encodeURIComponent(state.company)}&voucher_type=${encodeURIComponent(state.voucherType)}`,
+      { method: "DELETE" }
+    );
+    $("save-banner").innerHTML = `<div class="banner banner-info">Deleted.</div>`;
+    state.assignments = [];
+    state.exists = false;
+    $("delete-btn").style.display = "none";
+    renderTree();
+    renderZones();
+  } catch (e) {
+    $("save-banner").innerHTML = `<div class="banner banner-error">Delete failed: ${escapeHtml(String(e))}</div>`;
+  }
+}
+
+// Drawer wiring — bind immediately (independent of API fetch).
+(function wireDrawer() {
+  const mbtn = document.getElementById("menu-btn");
+  const drawer = document.getElementById("drawer");
+  const overlay = document.getElementById("drawer-overlay");
+  const dclose = document.getElementById("drawer-close");
+  if (!mbtn || !drawer || !overlay) return;
+  const open  = () => { drawer.classList.add("open"); overlay.classList.add("open"); document.body.style.overflow = "hidden"; };
+  const close = () => { drawer.classList.remove("open"); overlay.classList.remove("open"); document.body.style.overflow = ""; };
+  mbtn.addEventListener("click", open);
+  overlay.addEventListener("click", close);
+  if (dclose) dclose.addEventListener("click", close);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
+})();
+
+init();
+</script>
+</body>
+</html>

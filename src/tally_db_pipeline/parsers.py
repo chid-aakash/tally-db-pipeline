@@ -48,6 +48,16 @@ def _bool(el: ET.Element, tag: str) -> bool:
     return _text(el, tag, "").lower() in {"yes", "true", "1"}
 
 
+def _int_or_none(el: ET.Element, tag: str) -> int | None:
+    value = _text(el, tag, "").strip()
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
 def _parse_qty_uom(raw: str) -> tuple[float, str]:
     if not raw or not raw.strip():
         return 0.0, ""
@@ -323,6 +333,8 @@ def parse_vouchers(xml_string: str | bytes) -> list[dict]:
             "is_cancelled": _bool(el, "ISCANCELLED"),
             "is_optional": _bool(el, "ISOPTIONAL"),
             "guid": _text(el, "GUID"),
+            "alter_id": _int_or_none(el, "ALTERID"),
+            "master_id": _int_or_none(el, "MASTERID"),
             "inventory_entries": [],
             "ledger_entries": [],
             "unknown_sections": [],

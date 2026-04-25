@@ -1,0 +1,197 @@
+{% extends "base.html" %}
+{% block title %}Line {{ line }} — Process Configuration{% endblock %}
+
+{% block content %}
+<style>
+  main { max-width: 1100px; }
+  .pp-section { margin-top: 18px; }
+  .pp-section-head {
+    display: flex; align-items: center; justify-content: space-between;
+    background: var(--navy-50); padding: 10px 14px; border-radius: 8px 8px 0 0;
+    border: 1px solid var(--line); border-bottom: none;
+  }
+  .pp-section-head h2 { margin: 0; color: var(--navy-900); font-size: 1.05rem; }
+  .pp-table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid var(--line); border-radius: 0 0 8px 8px; }
+  .pp-table th, .pp-table td { padding: 8px 12px; border-bottom: 1px solid var(--line); text-align: left; font-size: .9rem; vertical-align: middle; }
+  .pp-table th { background: var(--surface-2); font-weight: 600; color: var(--ink-soft); font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
+  .pp-table tr:last-child td { border-bottom: none; }
+  .pp-table tr.inactive td { color: var(--muted); background: #fafafa; }
+  .pp-table tr.group-row td { background: #f3f4f6; font-weight: 600; color: var(--ink-soft); font-size: .82rem; text-transform: uppercase; letter-spacing: .04em; padding: 6px 12px; }
+  .pp-stage {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    background: #eef2ff; color: var(--navy-800); font-size: .76rem; font-weight: 600;
+  }
+  .pp-actions { white-space: nowrap; text-align: right; }
+  .pp-actions form { display: inline; }
+  .pp-mini-btn {
+    background: transparent; border: 1px solid var(--line); color: var(--ink-soft);
+    padding: 4px 8px; font-size: .8rem; border-radius: 6px; cursor: pointer; box-shadow: none;
+    transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast);
+  }
+  .pp-mini-btn:hover { background: var(--navy-50); border-color: var(--navy-700); color: var(--navy-800); transform: none; filter: none; box-shadow: none; }
+  .pp-mini-btn.danger:hover { background: #fee2e2; border-color: #dc2626; color: #991b1b; }
+  .pp-edit-form {
+    background: #fff7db; border: 1px solid var(--line); border-top: 2px solid var(--orange-500);
+    padding: 12px 14px;
+    display: grid; grid-template-columns: 2fr 1fr 1fr auto; gap: 10px; align-items: end;
+  }
+  .pp-edit-form label { margin: 0; }
+  .pp-edit-form input, .pp-edit-form select { padding: 6px 8px; font-size: .9rem; }
+  .pp-edit-form button { padding: 7px 14px; font-size: .9rem; }
+  .pp-empty {
+    padding: 20px; text-align: center; color: var(--muted);
+    background: #fff; border: 1px dashed var(--line); border-top: none; border-radius: 0 0 8px 8px;
+  }
+  .pp-empty .seed-form { display: inline-block; margin-top: 8px; }
+  .pp-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+  @media (max-width: 720px) {
+    .pp-edit-form { grid-template-columns: 1fr 1fr; }
+  }
+</style>
+
+<div class="card">
+  <div class="pp-toolbar">
+    <div>
+      <h1 style="margin:0">Line {{ line }} — Process Configuration</h1>
+      <p class="muted" style="margin:4px 0 0">{{ company }}</p>
+    </div>
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+      <a class="btn btn-secondary" href="/production/processes?company={{ company }}">← All lines</a>
+      <form method="get" action="/production/processes/{{ line }}" style="display:flex; gap:6px; align-items:center;">
+        <input type="hidden" name="company" value="{{ company }}">
+        <label style="margin:0; display:flex; gap:6px; align-items:center; font-weight:500; color:var(--ink-soft); font-size:.88rem;">
+          <input type="checkbox" name="show_inactive" value="1" {% if show_inactive %}checked{% endif %} onchange="this.form.submit()" style="width:auto;">
+          Show inactive
+        </label>
+      </form>
+      <form method="post" action="/production/processes/{{ line }}/refresh-cascade" style="margin:0;"
+            title="Re-pull rejection/rework catalog entries that match this line's active production stages">
+        <input type="hidden" name="company" value="{{ company }}">
+        <button class="btn btn-secondary" type="submit">Refresh from catalog</button>
+      </form>
+      <form method="post" action="/production/processes/{{ line }}/clear" style="margin:0;"
+            onsubmit="return confirm('Delete every row (production + rejection + rework, active + inactive) for Line {{ line }}? This cannot be undone. Existing DPR cell data referencing these rows will become orphaned.');">
+        <input type="hidden" name="company" value="{{ company }}">
+        <button class="btn btn-danger" type="submit">Clear all</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+{% for sec, sec_label in section_options %}
+{% set rows = sections.get(sec, []) %}
+<div class="pp-section" id="sec-{{ sec }}">
+  {% set existing_labels = rows | map(attribute='label') | list %}
+  {% set catalog_for_sec = catalog_by_section.get(sec, []) %}
+  {% set available_catalog = catalog_for_sec | rejectattr('label', 'in', existing_labels) | list %}
+  <div class="pp-section-head">
+    <h2>{{ sec_label }}</h2>
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+      <span class="muted" style="font-size:.85rem;">{{ rows|length }} row{{ '' if rows|length == 1 else 's' }}</span>
+      {% if available_catalog %}
+      <form method="post" action="/production/processes/{{ line }}/apply-catalog" style="display:flex; gap:6px; align-items:center; margin:0;">
+        <input type="hidden" name="company" value="{{ company }}">
+        <select name="entry_id" required style="padding:5px 8px; font-size:.85rem; min-width:220px;">
+          <option value="">Add from catalog…</option>
+          {% for e in available_catalog %}
+          <option value="{{ e.id }}">{{ e.label }}{% if e.group_label %} — {{ e.group_label }}{% endif %} [{{ stage_labels.get(e.stage, e.stage) }}]</option>
+          {% endfor %}
+        </select>
+        <button class="pp-mini-btn" type="submit">+ Add</button>
+      </form>
+      {% else %}
+      <span class="muted" style="font-size:.78rem; font-style:italic;">
+        {% if catalog_for_sec %}all catalog entries already added{% else %}no catalog entries — <a href="/production/process-catalog?company={{ company }}#sec-{{ sec }}">add some</a>{% endif %}
+      </span>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if rows %}
+  <table class="pp-table">
+    <thead>
+      <tr>
+        <th style="width:60px;"></th>
+        <th>Label</th>
+        <th>Stage</th>
+        {% if sec == 'rejection' %}<th>Group</th>{% endif %}
+        <th class="pp-actions">Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% set ns = namespace(prev_group=None) %}
+      {% for row in rows %}
+        {% if sec == 'rejection' and row.group_label and row.group_label != ns.prev_group %}
+        <tr class="group-row"><td colspan="5">{{ row.group_label }}</td></tr>
+        {% set ns.prev_group = row.group_label %}
+        {% endif %}
+        {% if edit_row and edit_row.id == row.id %}
+        <tr>
+          <td colspan="5" style="padding:0;">
+            <form method="post" action="/production/processes/{{ line }}/{{ row.id }}/edit" class="pp-edit-form">
+              <input type="hidden" name="company" value="{{ company }}">
+              <label>Label <input type="text" name="label" value="{{ row.label }}" required></label>
+              <label>Stage
+                <select name="stage" required>
+                  {% for sk, sl in stage_options %}
+                  <option value="{{ sk }}" {% if sk == row.stage %}selected{% endif %}>{{ sl }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              {% if sec == 'rejection' %}
+              <label>Group <input type="text" name="group_label" value="{{ row.group_label or '' }}" placeholder="e.g. Drilling"></label>
+              {% else %}
+              <input type="hidden" name="group_label" value="">
+              <span></span>
+              {% endif %}
+              <div style="display:flex; gap:6px;">
+                <button type="submit">Save</button>
+                <a class="btn btn-secondary" href="/production/processes/{{ line }}?company={{ company }}#sec-{{ sec }}">Cancel</a>
+              </div>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr {% if not row.active %}class="inactive"{% endif %}>
+          <td>
+            <form method="post" action="/production/processes/{{ line }}/{{ row.id }}/move" style="display:inline;">
+              <input type="hidden" name="company" value="{{ company }}">
+              <input type="hidden" name="dir" value="up">
+              <button class="pp-mini-btn" type="submit" title="Move up" {% if loop.first %}disabled{% endif %}>↑</button>
+            </form>
+            <form method="post" action="/production/processes/{{ line }}/{{ row.id }}/move" style="display:inline;">
+              <input type="hidden" name="company" value="{{ company }}">
+              <input type="hidden" name="dir" value="down">
+              <button class="pp-mini-btn" type="submit" title="Move down" {% if loop.last %}disabled{% endif %}>↓</button>
+            </form>
+          </td>
+          <td>{{ row.label }}{% if not row.active %} <span class="muted" style="font-size:.78rem;">(inactive)</span>{% endif %}</td>
+          <td><span class="pp-stage">{{ stage_labels.get(row.stage, row.stage) }}</span></td>
+          {% if sec == 'rejection' %}<td>{{ row.group_label or '' }}</td>{% endif %}
+          <td class="pp-actions">
+            <a class="pp-mini-btn" href="/production/processes/{{ line }}?company={{ company }}&{% if show_inactive %}show_inactive=1&{% endif %}edit={{ row.id }}#sec-{{ sec }}">Edit</a>
+            <form method="post" action="/production/processes/{{ line }}/{{ row.id }}/toggle">
+              <input type="hidden" name="company" value="{{ company }}">
+              {% if show_inactive %}<input type="hidden" name="show_inactive" value="1">{% endif %}
+              <button class="pp-mini-btn {% if row.active %}danger{% endif %}" type="submit">{{ 'Deactivate' if row.active else 'Reactivate' }}</button>
+            </form>
+          </td>
+        </tr>
+        {% endif %}
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="pp-empty">
+    No rows in this section yet.
+    <form method="post" action="/production/processes/{{ line }}/seed" class="seed-form">
+      <input type="hidden" name="company" value="{{ company }}">
+      <input type="hidden" name="section" value="{{ sec }}">
+      <button class="pp-mini-btn" type="submit">Seed Line Processes Defaults</button>
+    </form>
+  </div>
+  {% endif %}
+
+</div>
+{% endfor %}
+{% endblock %}
