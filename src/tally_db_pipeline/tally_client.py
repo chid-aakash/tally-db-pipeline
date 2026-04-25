@@ -424,6 +424,72 @@ class TallyClient:
         )
 
     @staticmethod
+    def build_voucher_guid_collection_xml(company: str, guid: str) -> str:
+        """Build a narrow full-detail voucher export for one staged Tally voucher id.
+
+        Tally may expose the lightweight profile GUID as GUID, REMOTEID, or SENDERID
+        depending on the collection shape and voucher mutation state.
+        """
+        filter_name = "VoucherGuidFilter"
+        escaped_guid = _tdl_string(guid)
+        filter_formula = (
+            f'$GUID = "{escaped_guid}" '
+            f'OR $SenderID = "{escaped_guid}" '
+            f'OR $RemoteID = "{escaped_guid}"'
+        )
+        return (
+            "<ENVELOPE>"
+            "<HEADER>"
+            "<VERSION>1</VERSION>"
+            "<TALLYREQUEST>EXPORT</TALLYREQUEST>"
+            "<TYPE>COLLECTION</TYPE>"
+            "<ID>VoucherByGuid</ID>"
+            "</HEADER>"
+            "<BODY><DESC>"
+            "<STATICVARIABLES>"
+            f"<SVCURRENTCOMPANY>{_xml(company)}</SVCURRENTCOMPANY>"
+            "<SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>"
+            "</STATICVARIABLES>"
+            "<TDL><TDLMESSAGE>"
+            '<COLLECTION NAME="VoucherByGuid" ISINITIALIZE="Yes">'
+            "<TYPE>Voucher</TYPE>"
+            f"<FILTER>{_xml(filter_name)}</FILTER>"
+            "<FETCH>*, ALLLEDGERENTRIES.*, ALLINVENTORYENTRIES.*</FETCH>"
+            "</COLLECTION>"
+            f'<SYSTEM TYPE="Formulae" NAME="{_xml_attr(filter_name)}">{_xml(filter_formula)}</SYSTEM>'
+            "</TDLMESSAGE></TDL>"
+            "</DESC></BODY>"
+            "</ENVELOPE>"
+        )
+
+    @staticmethod
+    def build_voucher_master_id_collection_xml(company: str, master_id: str | int) -> str:
+        """Build a narrow full-detail voucher object export for exactly one MASTERID."""
+        normalized_master_id = str(master_id).strip()
+        return (
+            "<ENVELOPE>"
+            "<HEADER>"
+            "<VERSION>1</VERSION>"
+            "<TALLYREQUEST>EXPORT</TALLYREQUEST>"
+            "<TYPE>OBJECT</TYPE>"
+            "<SUBTYPE>VOUCHER</SUBTYPE>"
+            f"<ID TYPE=\"Name\">ID:{_xml(normalized_master_id)}</ID>"
+            "</HEADER>"
+            "<BODY><DESC>"
+            "<STATICVARIABLES>"
+            f"<SVCURRENTCOMPANY>{_xml(company)}</SVCURRENTCOMPANY>"
+            "<SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>"
+            "</STATICVARIABLES>"
+            "<FETCHLIST>"
+            "<FETCH>*</FETCH>"
+            "<FETCH>ALLLEDGERENTRIES.*</FETCH>"
+            "<FETCH>ALLINVENTORYENTRIES.*</FETCH>"
+            "</FETCHLIST>"
+            "</DESC></BODY>"
+            "</ENVELOPE>"
+        )
+
+    @staticmethod
     def build_daybook_xml(
         company: str,
         voucher_type: str | None = None,

@@ -387,6 +387,7 @@ def _fetch_vouchers_for_range(
     from_date: str,
     to_date: str,
     range_mode: str,
+    full_fetch: bool = True,
 ) -> dict:
     if range_mode == "collection":
         if voucher_type:
@@ -397,7 +398,7 @@ def _fetch_vouchers_for_range(
                     voucher_type=voucher_type,
                     from_date=from_date,
                     to_date=to_date,
-                    full_fetch=True,
+                    full_fetch=full_fetch,
                 ),
             )
         else:
@@ -424,6 +425,80 @@ def _fetch_vouchers_for_range(
     vouchers = parse_vouchers(payload["response_xml"])
     _validate_voucher_dates_within_range(vouchers, from_date, to_date)
     return {"payload": payload, "vouchers": vouchers}
+
+
+def _upsert_voucher_header(session: Session, row: dict, company_name: str, voucher_type_rows: list[dict]) -> Voucher | None:
+    guid = row.get("guid")
+    if not guid:
+        return None
+    voucher = session.scalar(select(Voucher).where(Voucher.guid == guid))
+    if voucher is None:
+        voucher = Voucher(guid=guid, company_name=company_name, voucher_type_name=row["voucher_type_name"])
+        session.add(voucher)
+        session.flush()
+    voucher.company_name = company_name
+    voucher.voucher_type_name = row["voucher_type_name"]
+    voucher.base_voucher_type = resolve_voucher_base_type(row["voucher_type_name"], voucher_type_rows)
+    voucher.voucher_date = row["voucher_date"]
+    voucher.voucher_number = row["voucher_number"]
+    voucher.party_name = row["party_name"]
+    voucher.narration = row["narration"]
+    voucher.party_gstin = row["party_gstin"]
+    voucher.place_of_supply = row["place_of_supply"]
+    voucher.remote_id = row.get("remote_id") or None
+    voucher.voucher_key = row.get("voucher_key") or None
+    voucher.master_id = row.get("master_id") or None
+    voucher.is_cancelled = row["is_cancelled"]
+    voucher.is_optional = row["is_optional"]
+    voucher.last_synced_at = datetime.utcnow()
+    return voucher
+
+
+def _replace_voucher_detail(session: Session, row: dict, company_name: str, voucher_type_rows: list[dict]) -> Voucher | None:
+    voucher = _upsert_voucher_header(session, row, company_name, voucher_type_rows)
+    if voucher is None:
+        return None
+    voucher.inventory_entries.clear()
+    voucher.ledger_entries.clear()
+    voucher.unknown_sections.clear()
+
+    for item in row["inventory_entries"]:
+        voucher.inventory_entries.append(
+            VoucherInventoryEntry(
+                item_name=item["item_name"],
+                quantity=item["quantity"],
+                uom=item["uom"],
+                rate=item["rate"],
+                amount=item["amount"],
+                hsn=item["hsn"],
+                ledger_name=item["ledger_name"],
+                ledger_amount=item["ledger_amount"],
+                is_deemed_positive=item["is_deemed_positive"],
+                gst_rates_json=json.dumps(item["gst_rates"], sort_keys=True),
+            )
+        )
+
+    for item in row["ledger_entries"]:
+        voucher.ledger_entries.append(
+            VoucherLedgerEntry(
+                ledger_name=item["ledger_name"],
+                amount=item["amount"],
+                is_deemed_positive=item["is_deemed_positive"],
+                is_party_ledger=item["is_party_ledger"],
+                tax_rate=item["tax_rate"],
+                bill_allocations_json=json.dumps(item["bill_allocations"], sort_keys=True),
+                bank_allocations_json=json.dumps(item["bank_allocations"], sort_keys=True),
+            )
+        )
+
+    for item in row["unknown_sections"]:
+        voucher.unknown_sections.append(
+            VoucherUnknownSection(
+                section_tag=item["tag"],
+                section_xml=item["xml"],
+            )
+        )
+    return voucher
 
 
 def _get_checkpoint(session: Session, *, entity_type: str, company_name: str | None) -> SyncCheckpoint | None:
@@ -987,73 +1062,13 @@ def sync_vouchers(
         exact_voucher_types: set[str] = set()
         latest_marker = None
         for row in vouchers:
-            guid = row.get("guid")
-            if not guid:
-                continue
-
             voucher_type_name = row.get("voucher_type_name")
             if voucher_type_name:
                 exact_voucher_types.add(voucher_type_name)
 
-            voucher = session.scalar(select(Voucher).where(Voucher.guid == guid))
+            voucher = _replace_voucher_detail(session, row, company_name, voucher_type_rows)
             if voucher is None:
-                voucher = Voucher(guid=guid, company_name=company_name, voucher_type_name=row["voucher_type_name"])
-                session.add(voucher)
-                session.flush()
-            else:
-                voucher.inventory_entries.clear()
-                voucher.ledger_entries.clear()
-                voucher.unknown_sections.clear()
-
-            voucher.company_name = company_name
-            voucher.voucher_type_name = row["voucher_type_name"]
-            voucher.base_voucher_type = resolve_voucher_base_type(row["voucher_type_name"], voucher_type_rows)
-            voucher.voucher_date = row["voucher_date"]
-            voucher.voucher_number = row["voucher_number"]
-            voucher.party_name = row["party_name"]
-            voucher.narration = row["narration"]
-            voucher.party_gstin = row["party_gstin"]
-            voucher.place_of_supply = row["place_of_supply"]
-            voucher.is_cancelled = row["is_cancelled"]
-            voucher.is_optional = row["is_optional"]
-            voucher.last_synced_at = datetime.utcnow()
-
-            for item in row["inventory_entries"]:
-                voucher.inventory_entries.append(
-                    VoucherInventoryEntry(
-                        item_name=item["item_name"],
-                        quantity=item["quantity"],
-                        uom=item["uom"],
-                        rate=item["rate"],
-                        amount=item["amount"],
-                        hsn=item["hsn"],
-                        ledger_name=item["ledger_name"],
-                        ledger_amount=item["ledger_amount"],
-                        is_deemed_positive=item["is_deemed_positive"],
-                        gst_rates_json=json.dumps(item["gst_rates"], sort_keys=True),
-                    )
-                )
-
-            for item in row["ledger_entries"]:
-                voucher.ledger_entries.append(
-                    VoucherLedgerEntry(
-                        ledger_name=item["ledger_name"],
-                        amount=item["amount"],
-                        is_deemed_positive=item["is_deemed_positive"],
-                        is_party_ledger=item["is_party_ledger"],
-                        tax_rate=item["tax_rate"],
-                        bill_allocations_json=json.dumps(item["bill_allocations"], sort_keys=True),
-                        bank_allocations_json=json.dumps(item["bank_allocations"], sort_keys=True),
-                    )
-                )
-
-            for item in row["unknown_sections"]:
-                voucher.unknown_sections.append(
-                    VoucherUnknownSection(
-                        section_tag=item["tag"],
-                        section_xml=item["xml"],
-                    )
-                )
+                continue
 
             saved += 1
             voucher_date = row.get("voucher_date")
@@ -1089,6 +1104,264 @@ def sync_vouchers(
         )
         _finish_run(session, run, "failed", str(exc))
         raise
+
+
+def sync_voucher_headers(
+    session: Session,
+    client: TallyClient,
+    *,
+    company_name: str,
+    from_date: str,
+    to_date: str,
+) -> dict:
+    """Persist lightweight voucher headers/GUIDs without fetching voucher detail lines."""
+    run = _start_run(session, "voucher_headers", company_name=company_name)
+    try:
+        result = _fetch_vouchers_for_range(
+            client,
+            company_name=company_name,
+            voucher_type=None,
+            from_date=from_date,
+            to_date=to_date,
+            range_mode="collection",
+            full_fetch=False,
+        )
+        payload = result["payload"]
+        vouchers = result["vouchers"]
+        _record_payload(session, run, payload, company_name=company_name)
+        voucher_type_rows = _load_voucher_type_rows(session, company_name)
+
+        saved = 0
+        latest_marker = None
+        by_type: dict[str, int] = {}
+        for row in vouchers:
+            voucher = _upsert_voucher_header(session, row, company_name, voucher_type_rows)
+            if voucher is None:
+                continue
+            saved += 1
+            by_type[voucher.voucher_type_name] = by_type.get(voucher.voucher_type_name, 0) + 1
+            voucher_date = row.get("voucher_date")
+            if voucher_date and (latest_marker is None or voucher_date > latest_marker):
+                latest_marker = voucher_date
+
+        session.commit()
+        _upsert_checkpoint(
+            session,
+            entity_type="voucher_headers",
+            company_name=company_name,
+            status="success",
+            row_count=saved,
+            marker=latest_marker,
+        )
+        _finish_run(session, run, "success")
+        return {
+            "company_name": company_name,
+            "from_date": from_date,
+            "to_date": to_date,
+            "saved": saved,
+            "voucher_types": dict(sorted(by_type.items(), key=lambda item: (-item[1], item[0]))),
+        }
+    except Exception as exc:
+        session.rollback()
+        _upsert_checkpoint(
+            session,
+            entity_type="voucher_headers",
+            company_name=company_name,
+            status="failed",
+            error_message=str(exc),
+        )
+        _finish_run(session, run, "failed", str(exc))
+        raise
+
+
+def materialize_voucher_headers_from_latest_profile_payload(
+    session: Session,
+    *,
+    company_name: str,
+) -> dict:
+    """Populate voucher headers from the latest saved lightweight profile payload."""
+    payload = session.scalar(
+        select(RawPayload)
+        .where(RawPayload.company_name == company_name, RawPayload.request_type == "voucher_profile_collection_range")
+        .order_by(RawPayload.created_at.desc(), RawPayload.id.desc())
+    )
+    if payload is None:
+        raise RuntimeError(f"No voucher_profile_collection_range payload found for {company_name}")
+
+    run = _start_run(session, "voucher_headers_from_payload", company_name=company_name)
+    try:
+        vouchers = parse_vouchers(payload.response_xml)
+        voucher_type_rows = _load_voucher_type_rows(session, company_name)
+        saved = 0
+        latest_marker = None
+        by_type: dict[str, int] = {}
+        for row in vouchers:
+            voucher = _upsert_voucher_header(session, row, company_name, voucher_type_rows)
+            if voucher is None:
+                continue
+            saved += 1
+            by_type[voucher.voucher_type_name] = by_type.get(voucher.voucher_type_name, 0) + 1
+            voucher_date = row.get("voucher_date")
+            if voucher_date and (latest_marker is None or voucher_date > latest_marker):
+                latest_marker = voucher_date
+        session.commit()
+        _upsert_checkpoint(
+            session,
+            entity_type="voucher_headers",
+            company_name=company_name,
+            status="success",
+            row_count=saved,
+            marker=latest_marker,
+        )
+        _finish_run(session, run, "success")
+        return {
+            "company_name": company_name,
+            "source_payload_id": payload.id,
+            "saved": saved,
+            "latest_marker": latest_marker,
+            "voucher_types": dict(sorted(by_type.items(), key=lambda item: (-item[1], item[0]))),
+        }
+    except Exception as exc:
+        session.rollback()
+        _upsert_checkpoint(
+            session,
+            entity_type="voucher_headers",
+            company_name=company_name,
+            status="failed",
+            error_message=str(exc),
+        )
+        _finish_run(session, run, "failed", str(exc))
+        raise
+
+
+def sync_voucher_details_by_guid(
+    session: Session,
+    client: TallyClient,
+    *,
+    company_name: str,
+    guid: str,
+) -> dict:
+    run = _start_run(session, "voucher_detail_by_guid", company_name=company_name)
+    try:
+        payload = client.execute("voucher_detail_by_guid", client.build_voucher_guid_collection_xml(company_name, guid))
+        _record_payload(session, run, payload, company_name=company_name)
+        line_error = client.extract_line_error(payload["response_xml"])
+        if line_error:
+            raise RuntimeError(line_error)
+        voucher_type_rows = _load_voucher_type_rows(session, company_name)
+        vouchers = parse_vouchers(payload["response_xml"])
+        matched = [row for row in vouchers if row.get("guid") == guid]
+        if len(matched) != 1:
+            raise RuntimeError(f"Expected exactly one voucher for GUID {guid}, got {len(matched)}")
+        voucher = _replace_voucher_detail(session, matched[0], company_name, voucher_type_rows)
+        if voucher is None:
+            raise RuntimeError(f"Voucher detail for GUID {guid} did not include a GUID")
+        session.commit()
+        _finish_run(session, run, "success")
+        return {
+            "guid": guid,
+            "voucher_type_name": voucher.voucher_type_name,
+            "voucher_date": voucher.voucher_date,
+            "voucher_number": voucher.voucher_number,
+            "ledger_entries": len(voucher.ledger_entries),
+            "inventory_entries": len(voucher.inventory_entries),
+            "unknown_sections": len(voucher.unknown_sections),
+        }
+    except Exception as exc:
+        session.rollback()
+        _finish_run(session, run, "failed", str(exc))
+        raise
+
+
+def sync_voucher_details_by_master_id(
+    session: Session,
+    client: TallyClient,
+    *,
+    company_name: str,
+    master_id: str,
+) -> dict:
+    run = _start_run(session, "voucher_detail_by_master_id", company_name=company_name)
+    try:
+        payload = client.execute("voucher_detail_by_master_id", client.build_voucher_master_id_collection_xml(company_name, master_id))
+        _record_payload(session, run, payload, company_name=company_name)
+        line_error = client.extract_line_error(payload["response_xml"])
+        if line_error:
+            raise RuntimeError(line_error)
+        voucher_type_rows = _load_voucher_type_rows(session, company_name)
+        vouchers = parse_vouchers(payload["response_xml"])
+        matched = [row for row in vouchers if str(row.get("master_id") or "").strip() == str(master_id).strip()]
+        if len(matched) != 1:
+            raise RuntimeError(f"Expected exactly one voucher for MASTERID {master_id}, got {len(matched)}")
+        voucher = _replace_voucher_detail(session, matched[0], company_name, voucher_type_rows)
+        if voucher is None:
+            raise RuntimeError(f"Voucher detail for MASTERID {master_id} did not include a GUID")
+        session.commit()
+        _finish_run(session, run, "success")
+        return {
+            "guid": voucher.guid,
+            "master_id": voucher.master_id,
+            "voucher_type_name": voucher.voucher_type_name,
+            "voucher_date": voucher.voucher_date,
+            "voucher_number": voucher.voucher_number,
+            "ledger_entries": len(voucher.ledger_entries),
+            "inventory_entries": len(voucher.inventory_entries),
+            "unknown_sections": len(voucher.unknown_sections),
+        }
+    except Exception as exc:
+        session.rollback()
+        _finish_run(session, run, "failed", str(exc))
+        raise
+
+
+def sync_voucher_details_from_headers(
+    session: Session,
+    client: TallyClient,
+    *,
+    company_name: str,
+    voucher_type: str | None = None,
+    limit: int = 10,
+    only_missing_detail: bool = True,
+    continue_on_error: bool = False,
+) -> dict:
+    """Fetch full voucher details one MASTERID at a time from staged headers."""
+    query = (
+        select(Voucher.guid, Voucher.master_id, Voucher.voucher_type_name)
+        .where(Voucher.company_name == company_name)
+        .order_by(Voucher.voucher_date, Voucher.voucher_number, Voucher.guid)
+    )
+    if voucher_type:
+        query = query.where(Voucher.voucher_type_name == voucher_type)
+    if only_missing_detail:
+        query = query.where(~Voucher.ledger_entries.any(), ~Voucher.inventory_entries.any(), ~Voucher.unknown_sections.any())
+    query = query.where(Voucher.master_id.is_not(None), Voucher.master_id != "")
+    vouchers = [
+        {"guid": guid, "master_id": master_id, "voucher_type_name": voucher_type_name}
+        for guid, master_id, voucher_type_name in session.execute(query.limit(limit)).all()
+    ]
+
+    results = []
+    errors = []
+    for voucher in vouchers:
+        try:
+            results.append(sync_voucher_details_by_master_id(session, client, company_name=company_name, master_id=voucher["master_id"]))
+        except Exception as exc:
+            error = {
+                "guid": voucher["guid"],
+                "master_id": voucher["master_id"],
+                "voucher_type_name": voucher["voucher_type_name"],
+                "error": str(exc),
+            }
+            errors.append(error)
+            if not continue_on_error:
+                break
+
+    return {
+        "attempted": len(results) + len(errors),
+        "succeeded": len(results),
+        "failed": len(errors),
+        "results": results,
+        "errors": errors,
+    }
 
 
 def sync_vouchers_in_chunks(

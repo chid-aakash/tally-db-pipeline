@@ -6,7 +6,7 @@ from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from .config import get_settings
-from .models import Base, CostCentre, Godown, Group, Ledger, StockGroup, StockItem, Unit, VoucherType
+from .models import Base, CostCentre, Godown, Group, Ledger, StockGroup, StockItem, Unit, Voucher, VoucherType
 
 
 settings = get_settings()
@@ -42,6 +42,12 @@ COMPANY_SCOPED_MODELS = {
 
 def ensure_runtime_schema() -> None:
     with engine.begin() as conn:
+        inspector = inspect(conn)
+        if inspector.has_table("vouchers"):
+            columns = {column["name"] for column in inspector.get_columns("vouchers")}
+            for column in ("remote_id", "voucher_key", "master_id"):
+                if column not in columns:
+                    conn.execute(text(f"ALTER TABLE vouchers ADD COLUMN {column} VARCHAR(255)"))
         for table_name in COMPANY_SCOPED_TABLES:
             inspector = inspect(conn)
             if not inspector.has_table(table_name):

@@ -18,6 +18,7 @@ from .sync import (
     get_database_report,
     init_db,
     list_company_families,
+    materialize_voucher_headers_from_latest_profile_payload,
     prune_raw_payloads,
     prune_legacy_global_master_rows,
     profile_company_family_vouchers,
@@ -30,6 +31,10 @@ from .sync import (
     sync_masters,
     sync_standard_vouchers,
     sync_profiled_vouchers,
+    sync_voucher_details_by_guid,
+    sync_voucher_details_by_master_id,
+    sync_voucher_details_from_headers,
+    sync_voucher_headers,
     sync_voucher_types,
     sync_vouchers,
     sync_vouchers_in_chunks,
@@ -264,6 +269,80 @@ def sync_vouchers_command(
         typer.echo(f"Matched exact voucher types: {', '.join(matched_voucher_types)}")
     if result.get("from_date") or result.get("to_date"):
         typer.echo(f"Date range: {result.get('from_date') or result.get('to_date')} to {result.get('to_date') or result.get('from_date')}")
+
+
+@command("sync-voucher-headers")
+def sync_voucher_headers_command(
+    company: str = typer.Option(..., help="Exact Tally company name, including FY suffix where applicable."),
+    from_date: str = typer.Option(..., help="Inclusive start date in YYYY-MM-DD format."),
+    to_date: str = typer.Option(..., help="Inclusive end date in YYYY-MM-DD format."),
+) -> None:
+    init_db()
+    with _tally_client() as client, get_session() as session:
+        result = sync_voucher_headers(
+            session,
+            client,
+            company_name=company,
+            from_date=from_date,
+            to_date=to_date,
+        )
+    typer.echo(f"Synced {result['saved']} voucher headers.")
+    typer.echo(json.dumps(result["voucher_types"], indent=2, sort_keys=True))
+
+
+@command("materialize-voucher-headers")
+def materialize_voucher_headers_command(
+    company: str = typer.Option(..., help="Exact Tally company name, including FY suffix where applicable."),
+) -> None:
+    init_db()
+    with get_session() as session:
+        result = materialize_voucher_headers_from_latest_profile_payload(session, company_name=company)
+    typer.echo(f"Materialized {result['saved']} voucher headers from payload {result['source_payload_id']}.")
+    typer.echo(json.dumps(result["voucher_types"], indent=2, sort_keys=True))
+
+
+@command("sync-voucher-detail")
+def sync_voucher_detail_command(
+    company: str = typer.Option(..., help="Exact Tally company name, including FY suffix where applicable."),
+    guid: str = typer.Option(..., help="Exact Tally voucher GUID to fetch."),
+) -> None:
+    init_db()
+    with _tally_client() as client, get_session() as session:
+        result = sync_voucher_details_by_guid(session, client, company_name=company, guid=guid)
+    typer.echo(json.dumps(result, indent=2, sort_keys=True))
+
+
+@command("sync-voucher-detail-master-id")
+def sync_voucher_detail_master_id_command(
+    company: str = typer.Option(..., help="Exact Tally company name, including FY suffix where applicable."),
+    master_id: str = typer.Option(..., help="Exact Tally voucher MASTERID to fetch."),
+) -> None:
+    init_db()
+    with _tally_client() as client, get_session() as session:
+        result = sync_voucher_details_by_master_id(session, client, company_name=company, master_id=master_id)
+    typer.echo(json.dumps(result, indent=2, sort_keys=True))
+
+
+@command("sync-voucher-details")
+def sync_voucher_details_command(
+    company: str = typer.Option(..., help="Exact Tally company name, including FY suffix where applicable."),
+    voucher_type: Optional[str] = typer.Option(default=None, help="Exact staged Tally voucher type name, for example Temporary Purchase."),
+    limit: int = typer.Option(10, help="Maximum voucher detail records to fetch in this run."),
+    only_missing_detail: bool = typer.Option(True, help="Only fetch vouchers with no staged ledger, inventory, or unknown-section detail."),
+    continue_on_error: bool = typer.Option(False, help="Continue after a per-voucher detail failure."),
+) -> None:
+    init_db()
+    with _tally_client() as client, get_session() as session:
+        result = sync_voucher_details_from_headers(
+            session,
+            client,
+            company_name=company,
+            voucher_type=voucher_type,
+            limit=limit,
+            only_missing_detail=only_missing_detail,
+            continue_on_error=continue_on_error,
+        )
+    typer.echo(json.dumps(result, indent=2, sort_keys=True))
 
 
 @command("sync-vouchers-chunked")
