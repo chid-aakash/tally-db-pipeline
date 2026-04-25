@@ -3,7 +3,17 @@ __pycache__/
 *.pyc
 .DS_Store
 .env
+.env.*
 *.sqlite3
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.svg
+*.webp
+*.tiff
+*.ico
 data/
 support-bundles/
 dist/
