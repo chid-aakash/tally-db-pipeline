@@ -59,6 +59,28 @@ def ensure_runtime_schema() -> None:
                 columns = {column["name"] for column in inspector.get_columns(table_name)}
             if _needs_company_scope_rebuild(conn, table_name):
                 _rebuild_company_scoped_table(conn, table_name, columns)
+        if engine.dialect.name == "sqlite":
+            _ensure_sqlite_runtime_indexes(conn)
+
+
+def _ensure_sqlite_runtime_indexes(conn) -> None:
+    indexes = [
+        "CREATE INDEX IF NOT EXISTS ix_vouchers_company_type_date_number_guid ON vouchers (company_name, voucher_type_name, voucher_date, voucher_number, guid)",
+        "CREATE INDEX IF NOT EXISTS ix_vouchers_master_id ON vouchers (master_id)",
+        "CREATE INDEX IF NOT EXISTS ix_voucher_ledger_entries_voucher_id ON voucher_ledger_entries (voucher_id)",
+        "CREATE INDEX IF NOT EXISTS ix_voucher_inventory_entries_voucher_id ON voucher_inventory_entries (voucher_id)",
+        "CREATE INDEX IF NOT EXISTS ix_voucher_unknown_sections_voucher_id ON voucher_unknown_sections (voucher_id)",
+        "CREATE INDEX IF NOT EXISTS ix_raw_payloads_request_type ON raw_payloads (request_type)",
+        "CREATE INDEX IF NOT EXISTS ix_sync_runs_type_status_started ON sync_runs (sync_type, status, started_at)",
+    ]
+    existing_tables = {
+        row[0]
+        for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type = 'table'")).all()
+    }
+    for statement in indexes:
+        table_name = statement.split(" ON ", 1)[1].split(" ", 1)[0]
+        if table_name in existing_tables:
+            conn.execute(text(statement))
 
 
 def _needs_company_scope_rebuild(conn, table_name: str) -> bool:

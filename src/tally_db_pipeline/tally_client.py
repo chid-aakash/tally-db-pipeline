@@ -490,6 +490,42 @@ class TallyClient:
         )
 
     @staticmethod
+    def build_voucher_master_id_batch_collection_xml(company: str, master_ids: list[str | int]) -> str:
+        """Build a bounded full-detail voucher collection export for specific MASTERIDs."""
+        normalized_master_ids = [str(master_id).strip() for master_id in master_ids if str(master_id).strip()]
+        if not normalized_master_ids:
+            raise ValueError("At least one MASTERID is required")
+        invalid_master_ids = [master_id for master_id in normalized_master_ids if not master_id.isdigit()]
+        if invalid_master_ids:
+            raise ValueError(f"MASTERID values must be numeric: {', '.join(invalid_master_ids)}")
+        filter_name = "VoucherMasterIdBatchFilter"
+        filter_formula = " OR ".join(f"$MasterID = {master_id}" for master_id in normalized_master_ids)
+        return (
+            "<ENVELOPE>"
+            "<HEADER>"
+            "<VERSION>1</VERSION>"
+            "<TALLYREQUEST>EXPORT</TALLYREQUEST>"
+            "<TYPE>COLLECTION</TYPE>"
+            "<ID>VoucherMasterIdBatch</ID>"
+            "</HEADER>"
+            "<BODY><DESC>"
+            "<STATICVARIABLES>"
+            f"<SVCURRENTCOMPANY>{_xml(company)}</SVCURRENTCOMPANY>"
+            "<SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>"
+            "</STATICVARIABLES>"
+            "<TDL><TDLMESSAGE>"
+            '<COLLECTION NAME="VoucherMasterIdBatch" ISINITIALIZE="Yes">'
+            "<TYPE>Voucher</TYPE>"
+            f"<FILTER>{_xml(filter_name)}</FILTER>"
+            "<FETCH>*, ALLLEDGERENTRIES.*, ALLINVENTORYENTRIES.*</FETCH>"
+            "</COLLECTION>"
+            f'<SYSTEM TYPE="Formulae" NAME="{_xml_attr(filter_name)}">{_xml(filter_formula)}</SYSTEM>'
+            "</TDLMESSAGE></TDL>"
+            "</DESC></BODY>"
+            "</ENVELOPE>"
+        )
+
+    @staticmethod
     def build_daybook_xml(
         company: str,
         voucher_type: str | None = None,

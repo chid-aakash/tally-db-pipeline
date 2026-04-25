@@ -33,6 +33,7 @@ from .sync import (
     sync_profiled_vouchers,
     sync_voucher_details_by_guid,
     sync_voucher_details_by_master_id,
+    sync_voucher_details_from_headers_batched,
     sync_voucher_details_from_headers,
     sync_voucher_headers,
     sync_voucher_types,
@@ -341,6 +342,37 @@ def sync_voucher_details_command(
             limit=limit,
             only_missing_detail=only_missing_detail,
             continue_on_error=continue_on_error,
+        )
+    typer.echo(json.dumps(result, indent=2, sort_keys=True))
+
+
+@command("sync-voucher-details-batched")
+def sync_voucher_details_batched_command(
+    company: str = typer.Option(..., help="Exact Tally company name, including FY suffix where applicable."),
+    voucher_type: Optional[str] = typer.Option(default=None, help="Exact staged Tally voucher type name, for example Temporary Purchase."),
+    limit: int = typer.Option(10, help="Maximum missing voucher detail records to fetch in this run."),
+    batch_size: int = typer.Option(1, help="Number of MASTERIDs to request per bounded batch. Use 1 for the proven safe object-export path."),
+    progress_every: int = typer.Option(50, help="Emit one progress line after this many successful vouchers."),
+    continue_on_error: bool = typer.Option(False, help="Continue after a per-batch or per-voucher detail failure."),
+    fallback_to_single: bool = typer.Option(True, help="Fall back to proven single MASTERID object export if a batch is rejected."),
+) -> None:
+    init_db()
+
+    def emit(event: dict) -> None:
+        typer.echo(json.dumps(event, sort_keys=True))
+
+    with _tally_client() as client, get_session() as session:
+        result = sync_voucher_details_from_headers_batched(
+            session,
+            client,
+            company_name=company,
+            voucher_type=voucher_type,
+            limit=limit,
+            batch_size=batch_size,
+            progress_every=progress_every,
+            continue_on_error=continue_on_error,
+            fallback_to_single=fallback_to_single,
+            progress_callback=emit,
         )
     typer.echo(json.dumps(result, indent=2, sort_keys=True))
 

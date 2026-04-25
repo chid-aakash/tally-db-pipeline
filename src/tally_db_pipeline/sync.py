@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session
 
 from .config import get_settings
@@ -103,6 +103,19 @@ def _record_payload(session: Session, run: SyncRun, payload: dict, company_name:
     )
     session.add(row)
     session.commit()
+
+
+def _add_payload(session: Session, run_id: int, payload: dict, company_name: str | None = None) -> None:
+    session.add(
+        RawPayload(
+            sync_run_id=run_id,
+            request_type=payload["request_type"],
+            company_name=company_name,
+            request_xml=payload["request_xml"],
+            response_xml=payload["response_xml"],
+            response_sha256=payload["response_sha256"],
+        )
+    )
 
 
 def _record_file_payload(
@@ -1360,6 +1373,183 @@ def sync_voucher_details_from_headers(
         "succeeded": len(results),
         "failed": len(errors),
         "results": results,
+        "errors": errors,
+    }
+
+
+def _select_missing_voucher_detail_candidates(
+    session: Session,
+    *,
+    company_name: str,
+    voucher_type: str | None,
+    limit: int,
+) -> list[dict]:
+    voucher_type_filter = "and v.voucher_type_name = :voucher_type" if voucher_type else ""
+    rows = session.execute(
+        text(
+            f"""
+            with detail_ids as (
+                select voucher_id from voucher_ledger_entries
+                union
+                select voucher_id from voucher_inventory_entries
+                union
+                select voucher_id from voucher_unknown_sections
+            )
+            select v.guid, v.master_id, v.voucher_type_name
+            from vouchers v
+            left join detail_ids d on d.voucher_id = v.id
+            where v.company_name = :company_name
+              and d.voucher_id is null
+              and v.master_id is not null
+              and v.master_id != ''
+              {voucher_type_filter}
+            order by v.voucher_date, v.voucher_number, v.guid
+            limit :limit
+            """
+        ),
+        {"company_name": company_name, "voucher_type": voucher_type, "limit": limit},
+    ).mappings()
+    return [dict(row) for row in rows]
+
+
+def sync_voucher_details_from_headers_batched(
+    session: Session,
+    client: TallyClient,
+    *,
+    company_name: str,
+    voucher_type: str | None = None,
+    limit: int = 10,
+    batch_size: int = 1,
+    continue_on_error: bool = False,
+    fallback_to_single: bool = True,
+    progress_every: int = 50,
+    progress_callback: Callable[[dict], None] | None = None,
+) -> dict:
+    """Fetch missing voucher details using bounded MASTERID batches with single-voucher fallback."""
+    if batch_size < 1:
+        raise ValueError("batch_size must be at least 1")
+    if progress_every < 1:
+        raise ValueError("progress_every must be at least 1")
+    candidates = _select_missing_voucher_detail_candidates(
+        session,
+        company_name=company_name,
+        voucher_type=voucher_type,
+        limit=limit,
+    )
+    run = _start_run(session, "voucher_details_batch_master_id", company_name=company_name)
+    run_id = run.id
+    voucher_type_rows = _load_voucher_type_rows(session, company_name)
+    results = []
+    errors = []
+    processed = 0
+
+    def emit(event: dict) -> None:
+        if progress_callback:
+            progress_callback(event)
+
+    def persist_payload(payload: dict, requested_master_ids: list[str], *, request_mode: str) -> list[dict]:
+        _add_payload(session, run_id, payload, company_name=company_name)
+        line_error = client.extract_line_error(payload["response_xml"])
+        if line_error:
+            raise RuntimeError(line_error)
+        rows = parse_vouchers(payload["response_xml"])
+        requested = {str(master_id).strip() for master_id in requested_master_ids}
+        matched = []
+        returned = set()
+        for row in rows:
+            row_master_id = str(row.get("master_id") or "").strip()
+            if not row_master_id:
+                continue
+            if row_master_id not in requested:
+                raise RuntimeError(f"{request_mode} returned unexpected MASTERID {row_master_id}")
+            if row_master_id in returned:
+                raise RuntimeError(f"{request_mode} returned duplicate MASTERID {row_master_id}")
+            returned.add(row_master_id)
+            matched.append(row)
+        missing = sorted(requested - returned)
+        if missing:
+            raise RuntimeError(f"{request_mode} missed MASTERID(s): {', '.join(missing)}")
+        return matched
+
+    def fetch_single(master_id: str) -> int:
+        payload = client.execute(
+            "voucher_detail_by_master_id",
+            client.build_voucher_master_id_collection_xml(company_name, master_id),
+        )
+        rows = persist_payload(payload, [master_id], request_mode="single MASTERID object export")
+        for row in rows:
+            voucher = _replace_voucher_detail(session, row, company_name, voucher_type_rows)
+            if voucher is None:
+                raise RuntimeError(f"Voucher detail for MASTERID {master_id} did not include a GUID")
+        session.commit()
+        return len(rows)
+
+    try:
+        for offset in range(0, len(candidates), batch_size):
+            chunk = candidates[offset : offset + batch_size]
+            master_ids = [str(row["master_id"]).strip() for row in chunk]
+            try:
+                request_type = "voucher_detail_batch_by_master_id"
+                if len(master_ids) == 1:
+                    payload = client.execute(request_type, client.build_voucher_master_id_collection_xml(company_name, master_ids[0]))
+                    request_mode = "single MASTERID object export"
+                else:
+                    payload = client.execute(
+                        request_type,
+                        client.build_voucher_master_id_batch_collection_xml(company_name, master_ids),
+                    )
+                    request_mode = "MASTERID batch collection"
+                rows = persist_payload(payload, master_ids, request_mode=request_mode)
+                for row in rows:
+                    voucher = _replace_voucher_detail(session, row, company_name, voucher_type_rows)
+                    if voucher is None:
+                        raise RuntimeError("Voucher detail did not include a GUID")
+                session.commit()
+                processed += len(rows)
+                results.extend({"master_id": row.get("master_id"), "mode": "batch"} for row in rows)
+            except Exception as exc:
+                session.rollback()
+                if not fallback_to_single or len(master_ids) == 1:
+                    error = {"master_ids": master_ids, "error": str(exc)}
+                    errors.append(error)
+                    emit({"event": "error", **error})
+                    if not continue_on_error:
+                        break
+                    continue
+                emit({"event": "fallback", "master_ids": master_ids, "error": str(exc)})
+                for master_id in master_ids:
+                    try:
+                        saved = fetch_single(master_id)
+                        processed += saved
+                        results.append({"master_id": master_id, "mode": "single"})
+                    except Exception as single_exc:
+                        session.rollback()
+                        error = {"master_ids": [master_id], "error": str(single_exc)}
+                        errors.append(error)
+                        emit({"event": "error", **error})
+                        if not continue_on_error:
+                            break
+                if errors and not continue_on_error:
+                    break
+            if processed == len(candidates) or processed % progress_every == 0:
+                emit(
+                    {
+                        "event": "progress",
+                        "processed": processed,
+                        "succeeded": len(results),
+                        "failed": len(errors),
+                        "remaining": max(len(candidates) - processed - len(errors), 0),
+                    }
+                )
+        _finish_run(session, run, "success" if not errors else "partial", json.dumps(errors) if errors else None)
+    except Exception as exc:
+        session.rollback()
+        _finish_run(session, run, "failed", str(exc))
+        raise
+    return {
+        "attempted": len(candidates),
+        "succeeded": len(results),
+        "failed": len(errors),
         "errors": errors,
     }
 
