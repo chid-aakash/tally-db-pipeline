@@ -80,7 +80,7 @@
             <td>{{ e.company_name }}</td>
             <td><span class="status-badge status-{{ e.status }}">{{ e.status }}</span></td>
             <td>{{ e.tally_voucher_number or "" }}</td>
-            <td class="muted">{{ e.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+            <td class="muted">{{ e.created_at.strftime("%d-%m-%Y %H:%M") }}</td>
             <td>
               {% if e.status in ("draft", "failed") %}
                 <a href="/entries/{{ e.id }}/edit">Edit</a>

@@ -406,6 +406,7 @@ class DailyProductionReport(Base):
 
     cells: Mapped[list["DPRHourlyCell"]] = relationship(back_populates="report", cascade="all, delete-orphan")
     idle_events: Mapped[list["DPRIdleEvent"]] = relationship(back_populates="report", cascade="all, delete-orphan")
+    hour_models: Mapped[list["DPRHourModel"]] = relationship(back_populates="report", cascade="all, delete-orphan")
 
 
 class DPRHourlyCell(Base):
@@ -450,6 +451,14 @@ class ProductionProcess(Base):
     stage: Mapped[str] = mapped_column(String(30), nullable=False)
     label: Mapped[str] = mapped_column(String(150), nullable=False)
     group_label: Mapped[str | None] = mapped_column(String(100))
+    # 'input' or 'output' for production rows; None for rejection/rework.
+    # Drives stage I/O accounting on the per-hour entry page.
+    role: Mapped[str | None] = mapped_column(String(10))
+    # When true, the stage's input - output delta must be allocated across
+    # rejection rows before a per-hour entry can be saved. Disable for stages
+    # that legitimately receive material from outside the line (e.g. Washing
+    # also receives rejects from a Buffing rework loop).
+    validate_count: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
@@ -517,7 +526,107 @@ class ProcessCatalogEntry(Base):
     label: Mapped[str] = mapped_column(String(150), nullable=False)
     stage: Mapped[str] = mapped_column(String(30), nullable=False)
     group_label: Mapped[str | None] = mapped_column(String(100))
+    # 'input' or 'output' for production entries; None for rejection/rework.
+    role: Mapped[str | None] = mapped_column(String(10))
+    # See ProductionProcess.validate_count.
+    validate_count: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class DPRHourModel(Base):
+    """Model running in a particular hour of a DPR.
+
+    Lets a single report capture a within-shift changeover: the report's
+    `model` field is the primary/starting model; rows here override it for
+    specific hours. Absence of a row for an hour means the primary model
+    was running."""
+
+    __tablename__ = "dpr_hour_models"
+    __table_args__ = (
+        UniqueConstraint("report_id", "hour_key", name="uq_dpr_hour_model"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    report_id: Mapped[int] = mapped_column(ForeignKey("daily_production_reports.id"), nullable=False)
+    hour_key: Mapped[str] = mapped_column(String(20), nullable=False)
+    model: Mapped[str] = mapped_column(String(100), nullable=False)
+
+    report: Mapped["DailyProductionReport"] = relationship(back_populates="hour_models")
+
+
+class LineDailyVoucherPost(Base):
+    """Tracks the consolidated SJ - LINE voucher posted for one (company, date).
+
+    One row per attempt at posting; the most recent successful row is the
+    canonical Tally voucher for that day. Lets the Daily Production Report
+    pages show 'already posted' state and link back to the Tally voucher
+    number without re-querying Tally."""
+
+    __tablename__ = "line_daily_voucher_posts"
+    __table_args__ = (
+        UniqueConstraint("company_name", "report_date", "remote_id", name="uq_ldvp_company_date_remote"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    report_date: Mapped[str] = mapped_column(String(10), nullable=False)
+    remote_id: Mapped[str] = mapped_column(String(150), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")  # pending|posted|failed
+    scrap_rate: Mapped[float] = mapped_column(Float, default=5.50, nullable=False)
+    tally_master_id: Mapped[str | None] = mapped_column(String(100))
+    tally_voucher_number: Mapped[str | None] = mapped_column(String(100))
+    tally_error: Mapped[str | None] = mapped_column(Text)
+    posted_at: Mapped[datetime | None] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class ProductionModelSpec(Base):
+    """Physical spec of a cooktop-glass model: dimensions and burner-hole geometry.
+
+    Used to convert hourly piece counts on a Daily Production Report into the
+    weight-based scrap items (PLAIN GLASS SCRAP CLEAR / CIRCLE CULLET SCRAP CLEAR)
+    that ship on the SJ - LINE Tally voucher. One row per (company, model)."""
+
+    __tablename__ = "production_model_specs"
+    __table_args__ = (UniqueConstraint("company_name", "model", name="uq_pms_company_model"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    model: Mapped[str] = mapped_column(String(100), nullable=False)
+    length_mm: Mapped[float] = mapped_column(Float, nullable=False)
+    width_mm: Mapped[float] = mapped_column(Float, nullable=False)
+    thickness_mm: Mapped[float] = mapped_column(Float, nullable=False)
+    blank_price: Mapped[float | None] = mapped_column(Float)
+    drilled_price: Mapped[float | None] = mapped_column(Float)
+    printed_price: Mapped[float | None] = mapped_column(Float)
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+
+    holes: Mapped[list["ProductionModelHole"]] = relationship(
+        back_populates="spec", cascade="all, delete-orphan"
+    )
+
+
+class ProductionModelHole(Base):
+    """One hole-diameter row for a model spec. A model can have any number
+    of these — e.g. VEDA 3B = (165 mm × 2) + (139 mm × 1) + (10 mm × 4).
+    Each row contributes its own cylinder of cullet to the SJ - LINE scrap
+    weight: π·(diameter_mm/2)² × thickness_mm × density × count per drilled piece."""
+
+    __tablename__ = "production_model_holes"
+    __table_args__ = (
+        UniqueConstraint("spec_id", "diameter_mm", name="uq_pmh_spec_diameter"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    spec_id: Mapped[int] = mapped_column(ForeignKey("production_model_specs.id"), nullable=False)
+    diameter_mm: Mapped[float] = mapped_column(Float, nullable=False)
+    count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    spec: Mapped["ProductionModelSpec"] = relationship(back_populates="holes")
 
 
 class DPRIdleEvent(Base):

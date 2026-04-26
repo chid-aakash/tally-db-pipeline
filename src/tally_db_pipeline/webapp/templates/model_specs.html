@@ -1,0 +1,612 @@
+{% extends "base.html" %}
+{% block title %}Model Specs{% endblock %}
+
+{% block content %}
+<style>
+  main { max-width: none !important; padding-left: 16px; padding-right: 16px; }
+  .ms-card { padding: 14px; background: #f9fafb; border: 1px solid var(--line); border-radius: 8px; margin-top: 14px; }
+
+  .grid-wrap { margin-top: 14px; overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+  table.spec-grid { border-collapse: collapse; font-size: .85rem; min-width: 100%; }
+  table.spec-grid th, table.spec-grid td { border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 5px 8px; text-align: center; vertical-align: middle; white-space: nowrap; }
+  table.spec-grid thead th { background: var(--surface-2); position: sticky; top: 0; z-index: 2; font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-soft); padding: 6px 8px; }
+  table.spec-grid thead th.dia { background: #eef2ff; color: var(--navy-900); }
+  table.spec-grid thead th.filterable { position: relative; }
+  table.spec-grid thead th.filterable .label-row { display: inline-flex; align-items: center; gap: 4px; }
+  table.spec-grid thead th.filterable .filter-btn {
+    background: #fff; border: 1px solid var(--line); color: var(--navy-700);
+    font-size: .65rem; padding: 1px 4px; border-radius: 3px; cursor: pointer;
+    line-height: 1;
+  }
+  table.spec-grid thead th.filterable .filter-btn.active { background: var(--navy-700); color: #fff; border-color: var(--navy-700); }
+  table.spec-grid tbody td.cust-cell { text-align: left; font-weight: 600; color: var(--ink-soft); padding-left: 10px; min-width: 90px; font-size: .82rem; }
+  table.spec-grid tbody td.model-cell { text-align: left; font-weight: 700; color: var(--navy-900); padding-left: 8px; min-width: 130px; }
+  table.spec-grid tbody td.model-cell.stock-missing { background: #fee2e2 !important; color: #991b1b; }
+  table.spec-grid tbody tr:nth-child(even) td.model-cell.stock-missing { background: #fecaca !important; }
+  .missing-tag {
+    display: inline-block; margin-left: 6px; padding: 1px 5px;
+    background: #b91c1c; color: #fff; border-radius: 3px;
+    font-size: .68rem; font-weight: 700; letter-spacing: .03em;
+    vertical-align: middle;
+  }
+  .ms-legend .missing-tag { margin-left: 0; }
+  table.spec-grid tbody tr:nth-child(even) { background: #fafafa; }
+  table.spec-grid tbody tr:nth-child(even) td.cust-cell,
+  table.spec-grid tbody tr:nth-child(even) td.model-cell { background: #fafafa; }
+  table.spec-grid tbody tr.hidden-by-filter { display: none; }
+  table.spec-grid .qty-cell { font-variant-numeric: tabular-nums; }
+  table.spec-grid .qty-cell.zero { color: #d1d5db; }
+  table.spec-grid .row-actions { display: flex; gap: 6px; justify-content: center; }
+  table.spec-grid button.icon-btn {
+    padding: 4px 8px; font-size: .9rem; border-radius: 5px; cursor: pointer;
+    background: #fff; border: 1px solid var(--line); color: var(--navy-700);
+  }
+  table.spec-grid button.icon-btn:hover { background: var(--navy-50); border-color: var(--navy-700); }
+  table.spec-grid button.icon-btn.danger { color: #b91c1c; border-color: #fecaca; }
+  table.spec-grid button.icon-btn.danger:hover { background: #fee2e2; }
+  table.spec-grid .add-col-th { background: #fff7ed !important; }
+  table.spec-grid .add-col-th button { font-size: .75rem; padding: 3px 6px; background: #fff; border: 1px dashed #ea580c; color: #ea580c; cursor: pointer; }
+
+  .filter-popup {
+    position: absolute; top: 100%; left: 0; z-index: 50;
+    background: #fff; border: 1px solid var(--line); border-radius: 6px;
+    box-shadow: 0 6px 18px rgba(0,0,0,.12);
+    padding: 8px; min-width: 200px; max-height: 320px; overflow-y: auto; text-align: left;
+  }
+  .filter-popup .popup-head { display: flex; gap: 6px; align-items: center; padding-bottom: 6px; border-bottom: 1px solid var(--line); margin-bottom: 6px; }
+  .filter-popup .popup-head input[type=text] { flex: 1; font-size: .82rem; padding: 3px 6px; }
+  .filter-popup .toggle-all { font-size: .76rem; color: var(--navy-700); cursor: pointer; }
+  .filter-popup label { display: flex; align-items: center; gap: 6px; padding: 3px 4px; font-size: .85rem; cursor: pointer; border-radius: 4px; }
+  .filter-popup label:hover { background: var(--navy-50); }
+  .filter-popup .popup-foot { display: flex; gap: 6px; justify-content: flex-end; padding-top: 6px; border-top: 1px solid var(--line); margin-top: 6px; }
+  .filter-popup .popup-foot button { padding: 3px 10px; font-size: .8rem; cursor: pointer; }
+
+  .legend { margin: 8px 0 12px; font-size: .8rem; color: var(--ink-soft); }
+  .legend code { background: #f3f4f6; padding: 1px 5px; border-radius: 4px; }
+
+  /* Modal */
+  dialog#spec-dialog {
+    border: 1px solid var(--line); border-radius: 12px; padding: 0;
+    width: min(620px, 92vw); box-shadow: 0 20px 50px rgba(0,0,0,.18);
+  }
+  dialog#spec-dialog::backdrop { background: rgba(15, 30, 69, .35); }
+  .modal-head { padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(180deg, var(--navy-50), #fff); }
+  .modal-head h2 { margin: 0; font-size: 1.1rem; color: var(--navy-900); }
+  .modal-body { padding: 16px 18px; }
+  .modal-foot { padding: 12px 18px; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; gap: 8px; background: #fafafa; }
+  .modal-grid { display: grid; grid-template-columns: 2fr 2fr; gap: 12px; }
+  .modal-grid.dim-grid { grid-template-columns: repeat(3, 1fr); }
+  .modal-field label { display: block; font-size: .72rem; color: var(--ink-soft); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 3px; }
+  .modal-field input { width: 100%; padding: 7px 9px; font-size: .92rem; box-sizing: border-box; }
+  .holes-section { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line); }
+  .holes-section h4 { margin: 0 0 8px; font-size: .9rem; color: var(--navy-900); }
+  .hole-row { display: flex; gap: 8px; align-items: end; margin-bottom: 6px; }
+  .hole-row label { display: block; font-size: .68rem; color: var(--ink-soft); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 2px; }
+  .hole-row input { padding: 5px 7px; font-size: .88rem; width: 110px; box-sizing: border-box; }
+  .hole-row input.qty { width: 80px; }
+  .hole-row .x-btn { padding: 5px 9px; border: 1px solid #fecaca; color: #b91c1c; background: #fff; border-radius: 6px; cursor: pointer; }
+  .add-hole-btn { margin-top: 4px; padding: 6px 12px; border: 1px dashed var(--navy-700); color: var(--navy-700); background: #fff; border-radius: 6px; cursor: pointer; font-size: .85rem; }
+  .modal-foot button.primary { background: var(--navy-700); color: #fff; border: 1px solid var(--navy-700); padding: 7px 16px; border-radius: 6px; cursor: pointer; }
+  .modal-foot button.secondary { background: #fff; color: var(--ink-soft); border: 1px solid var(--line); padding: 7px 16px; border-radius: 6px; cursor: pointer; }
+</style>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+    <div>
+      <h1 style="margin:0">Model Specs</h1>
+      <p class="muted" style="margin:4px 0 0">Physical dimensions and per-diameter hole counts. Each <strong>diameter is a column</strong>. Excel is the source of truth — sync from OneDrive to refresh. Manual editing is locked by default.</p>
+    </div>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <button type="button" class="primary" id="open-add-btn"
+              style="padding:8px 16px; background:var(--navy-700); color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:600;">
+        + Add Model
+      </button>
+      {% if edit_lock_enabled %}
+        <span class="muted" style="font-size:.78rem;">🔒 Password required for Add / Edit / Delete</span>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+{% if request.query_params.get('msg') %}
+  <div class="card" style="background:#ecfdf5; border-color:#a7f3d0; color:#065f46;">
+    Upload result: {{ request.query_params.get('msg') }}
+  </div>
+{% endif %}
+
+<div class="ms-card" style="background:#eef2ff; border-color:#c7d2fe;">
+  <h3 style="margin:0 0 8px;">Sync live from OneDrive</h3>
+  <p class="muted" style="margin:0 0 10px; font-size:.86rem;">
+    Pulls the <code>MASTER_DATA</code> table from your private OneDrive workbook via Microsoft Graph. No public link needed. Drilling columns are auto-detected by header (anything ending in <code>MM</code>).
+  </p>
+  {% if not onedrive_configured %}
+    <p style="margin:0; color:#7c2d12; font-size:.85rem;">
+      ⚠️ Not configured. Fill <code>MS_CLIENT_ID</code>, <code>MS_TENANT_ID</code>, <code>MS_CLIENT_SECRET</code>, and <code>MS_WORKBOOK_PATH</code> in <code>.env</code>, then restart the server.
+    </p>
+  {% elif not onedrive_signed_in %}
+    <form method="get" action="/oauth/microsoft/login" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+      <button type="submit" style="padding:8px 14px; background:#2563eb; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:600;">
+        Connect OneDrive
+      </button>
+      <span class="muted" style="font-size:.83rem;">One-time sign-in with your Microsoft work account.</span>
+    </form>
+  {% else %}
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+      <form method="post" action="/production/models/sync" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:0;">
+        <label style="font-size:.86rem;">Sheet name
+          <input name="worksheet_name" type="text" value="{{ ms_worksheet_default }}" style="padding:4px 8px; width: 140px;">
+        </label>
+        <label style="font-size:.86rem;">Table name
+          <input name="table_name" type="text" value="{{ ms_table_default }}" style="padding:4px 8px; width: 140px;">
+        </label>
+        <button type="submit" style="padding:8px 14px; background:var(--navy-700); color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:600;">
+          Sync now
+        </button>
+        <span class="ms-legend" style="display:inline-flex; align-items:center; gap:10px; font-size:.78rem; color:var(--ink-soft); flex-wrap:wrap;">
+          <span><span class="missing-tag">BG-NF</span> = Blank Glass Not Found</span>
+          <span><span class="missing-tag">DG-NF</span> = Drilled Glass Not Found</span>
+          <span><span class="missing-tag">NP</span> = No Price</span>
+        </span>
+        {% if last_sync_at %}
+          <span class="muted" style="font-size:.78rem;">
+            Last sync: <strong>{{ last_sync_at.strftime('%d %b, %H:%M') }}</strong>
+          </span>
+        {% endif %}
+        <span class="muted" style="font-size:.83rem;">✓ Connected</span>
+      </form>
+      <form method="post" action="/oauth/microsoft/signout" style="margin:0 0 0 auto;">
+        <button type="submit" class="icon-btn" style="font-size:.78rem;" onclick="return confirm('Sign out of OneDrive?');">Sign out</button>
+      </form>
+    </div>
+  {% endif %}
+</div>
+
+<div class="ms-card">
+  <h3 style="margin:0 0 8px;">Or bulk upload an exported sheet</h3>
+  <p class="muted" style="margin:0 0 10px; font-size:.86rem;">
+    Export your OneDrive workbook as <code>.xlsx</code> or <code>.csv</code>. Required columns: <strong>Customer</strong>, <strong>Model</strong>, <strong>Length</strong>, <strong>Width</strong>, <strong>Thickness</strong>. Rows without a Customer value are <strong>skipped with an error</strong>. Any column whose header is <code>&lt;number&gt; MM</code> becomes a hole-diameter column.
+  </p>
+  <form method="post" action="/production/models/upload" enctype="multipart/form-data" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+    <label style="font-size:.86rem;">Sheet name
+      <input name="worksheet_name" type="text" value="{{ ms_worksheet_default }}" placeholder="(blank = active sheet)" style="padding:4px 8px; width: 140px;">
+    </label>
+    <label style="font-size:.86rem;">Table name
+      <input name="table_name" type="text" value="{{ ms_table_default }}" placeholder="(blank = whole sheet)" style="padding:4px 8px; width: 140px;">
+    </label>
+    <input type="file" name="file" accept=".xlsx,.csv" required>
+    <button type="submit">Upload</button>
+  </form>
+</div>
+
+<datalist id="customer-options">
+  {% for c in customers %}<option value="{{ c }}">{% endfor %}
+</datalist>
+
+<h3 style="margin-top:18px; margin-bottom: 6px;">{{ specs|length }} model{{ '' if specs|length == 1 else 's' }} on file</h3>
+<p class="legend">
+  Click ▾ on a column header to filter (Excel-style: pick which values to show). Click <code>+ column</code> to add a hole diameter column to the table layout. Editing is via the ✏️ button per row.
+</p>
+
+<div class="grid-wrap">
+  <table class="spec-grid" id="spec-grid">
+    <thead>
+      <tr id="header-row">
+        <th class="filterable" data-col="customer">
+          <span class="label-row">Customer <button type="button" class="filter-btn" data-col="customer" title="Filter">▾</button></span>
+        </th>
+        <th style="text-align:left; padding-left:10px;">Model</th>
+        <th class="filterable" data-col="length">
+          <span class="label-row">Length<br>(mm) <button type="button" class="filter-btn" data-col="length" title="Filter">▾</button></span>
+        </th>
+        <th class="filterable" data-col="width">
+          <span class="label-row">Width<br>(mm) <button type="button" class="filter-btn" data-col="width" title="Filter">▾</button></span>
+        </th>
+        <th class="filterable" data-col="thickness">
+          <span class="label-row">Thick.<br>(mm) <button type="button" class="filter-btn" data-col="thickness" title="Filter">▾</button></span>
+        </th>
+        <th>Blank<br>Price</th>
+        <th>Drilled<br>Price</th>
+        <th>Printed<br>Price</th>
+        {% for d in all_diameters %}
+        <th class="dia diameter-col" data-diameter="{{ d }}">{{ '%g' % d }} mm</th>
+        {% endfor %}
+        <th class="add-col-th"><button type="button" id="add-col-btn">+ column</button></th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody id="spec-body">
+      {% for s in specs %}
+      <tr data-spec-id="{{ s.id }}"
+          data-customer="{{ s.company_name }}"
+          data-length="{{ '%g' % s.length_mm }}"
+          data-width="{{ '%g' % s.width_mm }}"
+          data-thickness="{{ '%g' % s.thickness_mm }}">
+        <td class="cust-cell">{{ s.company_name }}</td>
+        {% set status = model_status.get(s.model, 'ok') %}
+        <td class="model-cell{% if status != 'ok' %} stock-missing{% endif %}"
+            {% if status == 'both_missing' %}title="Neither BLANK GLASS - {{ s.model }} nor DRILLED GLASS - {{ s.model }} is present in Tally ({{ tally_company_name }}). This model will not be used in line production entry or in the SJ - LINE voucher."
+            {% elif status == 'blank_missing' %}title="BLANK GLASS - {{ s.model }} not found in Tally ({{ tally_company_name }}). Add the stock item before this model can be used in the SJ - LINE voucher."
+            {% elif status == 'drilled_missing' %}title="DRILLED GLASS - {{ s.model }} not found in Tally ({{ tally_company_name }}). Add the stock item before this model can be used in the SJ - LINE voucher."
+            {% elif status == 'no_price' %}title="Stock items exist in Tally, but BLANK GLASS / DRILLED GLASS price is missing in the spec. Add prices in the OneDrive sheet (or via Edit) and re-sync — this model will not be loadable in the line production entry until both prices are set."{% endif %}>
+          {{ s.model }}{% if status == 'blank_missing' %} <span class="missing-tag">BG-NF</span>{% elif status == 'drilled_missing' %} <span class="missing-tag">DG-NF</span>{% elif status == 'no_price' %} <span class="missing-tag">NP</span>{% endif %}
+        </td>
+        <td>{{ '%g' % s.length_mm }}</td>
+        <td>{{ '%g' % s.width_mm }}</td>
+        <td>{{ '%g' % s.thickness_mm }}</td>
+        <td>{% if s.blank_price %}{{ '%g' % s.blank_price }}{% else %}—{% endif %}</td>
+        <td>{% if s.drilled_price %}{{ '%g' % s.drilled_price }}{% else %}—{% endif %}</td>
+        <td>{% if s.printed_price %}{{ '%g' % s.printed_price }}{% else %}—{% endif %}</td>
+        {% for d in all_diameters %}
+        {% set qty = counts.get(s.id, {}).get(d, 0) %}
+        <td class="qty-cell {% if not qty %}zero{% endif %}" data-diameter="{{ d }}">
+          {% if qty %}{{ qty }}{% else %}—{% endif %}
+        </td>
+        {% endfor %}
+        <td class="add-col-th"></td>
+        <td>
+          <div class="row-actions">
+            <button type="button" class="icon-btn edit-btn"
+                    data-spec-id="{{ s.id }}"
+                    data-customer="{{ s.company_name }}"
+                    data-model="{{ s.model }}"
+                    data-length="{{ '%g' % s.length_mm }}"
+                    data-width="{{ '%g' % s.width_mm }}"
+                    data-thickness="{{ '%g' % s.thickness_mm }}"
+                    data-holes='[{% for h in s.holes|sort(attribute="diameter_mm") %}{"d":{{ h.diameter_mm }},"c":{{ h.count }}}{{ "," if not loop.last }}{% endfor %}]'
+                    title="Edit">✏️</button>
+            <form method="post" action="/production/models/delete" class="delete-form" style="display:inline;"
+                  data-model="{{ s.model }}">
+              <input type="hidden" name="spec_id" value="{{ s.id }}">
+              <input type="hidden" name="company" value="{{ s.company_name }}">
+              <input type="hidden" name="edit_password" value="">
+              <button type="submit" class="icon-btn danger" title="Delete">🗑</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<!-- Add / Edit modal -->
+<dialog id="spec-dialog">
+  <form method="post" action="/production/models/save" id="spec-form">
+    <input type="hidden" name="replace_holes" value="1">
+    <input type="hidden" name="spec_id" id="dlg-spec-id" value="">
+    <input type="hidden" name="edit_password" id="dlg-edit-password" value="">
+    <div class="modal-head">
+      <h2 id="dlg-title">Add Model</h2>
+    </div>
+    <div class="modal-body">
+      <div class="modal-grid">
+        <div class="modal-field">
+          <label>Customer</label>
+          <input name="company" id="dlg-customer" list="customer-options" placeholder="e.g. BUTTERFLY" required>
+        </div>
+        <div class="modal-field">
+          <label>Model</label>
+          <input name="model" id="dlg-model" placeholder="e.g. DUO 2B" required>
+        </div>
+      </div>
+      <div class="modal-grid dim-grid" style="margin-top: 12px;">
+        <div class="modal-field"><label>Length (mm)</label><input name="length_mm" id="dlg-length" type="number" step="any" required></div>
+        <div class="modal-field"><label>Width (mm)</label><input name="width_mm" id="dlg-width" type="number" step="any" required></div>
+        <div class="modal-field"><label>Thickness (mm)</label><input name="thickness_mm" id="dlg-thickness" type="number" step="any" required></div>
+      </div>
+
+      <div class="holes-section">
+        <h4>Hole sizes</h4>
+        <div id="dlg-holes"></div>
+        <button type="button" class="add-hole-btn" id="dlg-add-hole">+ Add hole size</button>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="secondary" id="dlg-cancel">Cancel</button>
+      <button type="submit" class="primary" id="dlg-submit">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Password gate modal: shown before Add / Edit / Delete when MODEL_SPECS_EDIT_PASSWORD is set -->
+<dialog id="pw-dialog" style="border:1px solid var(--line); border-radius:12px; padding:0; width:min(380px, 92vw); box-shadow:0 20px 50px rgba(0,0,0,.18);">
+  <div style="padding:14px 18px; border-bottom:1px solid var(--line); background:linear-gradient(180deg, #fef2f2, #fff);">
+    <h2 style="margin:0; font-size:1.05rem; color:#991b1b;">🔒 Edit password required</h2>
+    <p class="muted" style="margin:4px 0 0; font-size:.82rem;" id="pw-action-label">Enter the password to continue.</p>
+  </div>
+  <div style="padding:16px 18px;">
+    <input id="pw-input" type="password" placeholder="Edit password" autocomplete="off"
+           style="width:100%; padding:9px 10px; font-size:.95rem; box-sizing:border-box; border:1px solid var(--line); border-radius:6px;">
+    <div id="pw-error" style="color:#b91c1c; font-size:.82rem; margin-top:8px; display:none;">Wrong password.</div>
+  </div>
+  <div style="padding:12px 18px; border-top:1px solid var(--line); display:flex; justify-content:flex-end; gap:8px; background:#fafafa;">
+    <button type="button" id="pw-cancel" style="background:#fff; border:1px solid var(--line); color:var(--ink-soft); padding:7px 14px; border-radius:6px; cursor:pointer;">Cancel</button>
+    <button type="button" id="pw-submit" class="primary" style="background:var(--navy-700); color:#fff; border:1px solid var(--navy-700); padding:7px 16px; border-radius:6px; cursor:pointer;">Continue</button>
+  </div>
+</dialog>
+
+<template id="hole-row-tpl">
+  <div class="hole-row">
+    <div>
+      <label>Diameter (mm)</label>
+      <input name="hole_diameter_mm" type="number" step="any" min="0.1" placeholder="165" required>
+    </div>
+    <div>
+      <label>Count</label>
+      <input name="hole_count" class="qty" type="number" step="1" min="1" placeholder="2" required>
+    </div>
+    <button type="button" class="x-btn" title="Remove">×</button>
+  </div>
+</template>
+
+<script>
+(function () {
+  var table = document.getElementById("spec-grid");
+  var headerRow = document.getElementById("header-row");
+  if (!table || !headerRow) return;
+
+  // ===== Modal =====
+  var dlg = document.getElementById("spec-dialog");
+  var dlgTitle = document.getElementById("dlg-title");
+  var dlgSpecId = document.getElementById("dlg-spec-id");
+  var dlgCustomer = document.getElementById("dlg-customer");
+  var dlgModel = document.getElementById("dlg-model");
+  var dlgLength = document.getElementById("dlg-length");
+  var dlgWidth = document.getElementById("dlg-width");
+  var dlgThickness = document.getElementById("dlg-thickness");
+  var dlgHoles = document.getElementById("dlg-holes");
+  var dlgAddHole = document.getElementById("dlg-add-hole");
+  var dlgCancel = document.getElementById("dlg-cancel");
+  var dlgSubmit = document.getElementById("dlg-submit");
+  var holeTpl = document.getElementById("hole-row-tpl");
+
+  function clearHoles() { dlgHoles.innerHTML = ""; }
+  function addHoleRow(d, c) {
+    var node = holeTpl.content.firstElementChild.cloneNode(true);
+    var inputs = node.querySelectorAll("input");
+    if (d !== undefined && d !== null && d !== "") inputs[0].value = d;
+    if (c !== undefined && c !== null && c !== "") inputs[1].value = c;
+    node.querySelector(".x-btn").addEventListener("click", function () { node.remove(); });
+    dlgHoles.appendChild(node);
+    return node;
+  }
+
+  function openAdd() {
+    dlgTitle.textContent = "Add Model";
+    dlgSubmit.textContent = "Add";
+    dlgSpecId.value = "";
+    dlgCustomer.value = "";
+    dlgModel.value = "";
+    dlgLength.value = "";
+    dlgWidth.value = "";
+    dlgThickness.value = "";
+    clearHoles();
+    addHoleRow();
+    dlg.showModal();
+    setTimeout(function () { dlgCustomer.focus(); }, 0);
+  }
+  function openEdit(btn) {
+    dlgTitle.textContent = "Edit Model";
+    dlgSubmit.textContent = "Save";
+    dlgSpecId.value = btn.getAttribute("data-spec-id");
+    dlgCustomer.value = btn.getAttribute("data-customer") || "";
+    dlgModel.value = btn.getAttribute("data-model") || "";
+    dlgLength.value = btn.getAttribute("data-length") || "";
+    dlgWidth.value = btn.getAttribute("data-width") || "";
+    dlgThickness.value = btn.getAttribute("data-thickness") || "";
+    clearHoles();
+    var holes = [];
+    try { holes = JSON.parse(btn.getAttribute("data-holes") || "[]"); } catch (e) { holes = []; }
+    if (holes.length === 0) addHoleRow();
+    else holes.forEach(function (h) { addHoleRow(h.d, h.c); });
+    dlg.showModal();
+  }
+
+  // ===== Per-action password gate =====
+  // Server-driven flag: when MODEL_SPECS_EDIT_PASSWORD is set, every Add /
+  // Edit / Delete click must pass through the password modal before the
+  // intended action (open dialog or submit delete) runs.
+  var LOCK_ENABLED = {{ 'true' if edit_lock_enabled else 'false' }};
+  var pwDlg = document.getElementById("pw-dialog");
+  var pwInput = document.getElementById("pw-input");
+  var pwError = document.getElementById("pw-error");
+  var pwSubmit = document.getElementById("pw-submit");
+  var pwCancel = document.getElementById("pw-cancel");
+  var pwActionLabel = document.getElementById("pw-action-label");
+  var pwPending = null;  // { label, onOk(password) }
+
+  function requirePassword(label, onOk) {
+    if (!LOCK_ENABLED) { onOk(""); return; }
+    pwPending = { label: label, onOk: onOk };
+    pwActionLabel.textContent = "Enter the password to " + label + ".";
+    pwInput.value = "";
+    pwError.style.display = "none";
+    pwDlg.showModal();
+    setTimeout(function () { pwInput.focus(); }, 0);
+  }
+  pwCancel.addEventListener("click", function () { pwPending = null; pwDlg.close(); });
+  pwInput.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); pwSubmit.click(); } });
+  pwSubmit.addEventListener("click", function () {
+    if (!pwPending) { pwDlg.close(); return; }
+    var pw = pwInput.value || "";
+    var fd = new FormData();
+    fd.append("password", pw);
+    fetch("/production/models/verify-password", { method: "POST", body: fd })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (j && j.ok) {
+          var cb = pwPending.onOk; pwPending = null;
+          pwDlg.close();
+          cb(pw);
+        } else {
+          pwError.style.display = "block";
+          pwInput.select();
+        }
+      })
+      .catch(function () {
+        pwError.textContent = "Verification failed — try again.";
+        pwError.style.display = "block";
+      });
+  });
+
+  var addBtnEl = document.getElementById("open-add-btn");
+  if (addBtnEl) addBtnEl.addEventListener("click", function () {
+    requirePassword("add a new model", function (pw) {
+      document.getElementById("dlg-edit-password").value = pw;
+      openAdd();
+    });
+  });
+  document.querySelectorAll(".edit-btn").forEach(function (b) {
+    b.addEventListener("click", function () {
+      requirePassword("edit this model", function (pw) {
+        document.getElementById("dlg-edit-password").value = pw;
+        openEdit(b);
+      });
+    });
+  });
+  document.querySelectorAll(".delete-form").forEach(function (form) {
+    form.addEventListener("submit", function (ev) {
+      var pwField = form.querySelector('input[name="edit_password"]');
+      // Already authorized in this submit cycle? let it through.
+      if (form.dataset.authorized === "1") return;
+      ev.preventDefault();
+      var modelName = form.getAttribute("data-model") || "this model";
+      if (!confirm("Delete spec for " + modelName + "?")) return;
+      requirePassword("delete " + modelName, function (pw) {
+        if (pwField) pwField.value = pw;
+        form.dataset.authorized = "1";
+        form.submit();
+      });
+    });
+  });
+  dlgAddHole.addEventListener("click", function () { addHoleRow(); var f = dlgHoles.lastElementChild.querySelector("input"); if (f) f.focus(); });
+  dlgCancel.addEventListener("click", function () { dlg.close(); });
+
+  // ===== + column (still affects layout, lets you add diameter columns to the read-only grid for at-a-glance view) =====
+  var addBtn = document.getElementById("add-col-btn");
+  if (addBtn) {
+    addBtn.addEventListener("click", function () {
+      var raw = prompt("Add a hole-diameter column to the table view (mm):");
+      if (raw === null) return;
+      var d = parseFloat(String(raw).trim());
+      if (!isFinite(d) || d <= 0) { alert("Please enter a positive number."); return; }
+      if (table.querySelector('th.diameter-col[data-diameter="' + d + '"]')) return;
+      var diaThs = Array.prototype.slice.call(headerRow.querySelectorAll("th.diameter-col"));
+      var insertBeforeTh = headerRow.querySelector(".add-col-th");
+      for (var i = 0; i < diaThs.length; i++) {
+        if (parseFloat(diaThs[i].getAttribute("data-diameter")) > d) { insertBeforeTh = diaThs[i]; break; }
+      }
+      var newTh = document.createElement("th");
+      newTh.className = "dia diameter-col";
+      newTh.setAttribute("data-diameter", d);
+      newTh.textContent = (Math.round(d * 100) / 100) + " mm";
+      headerRow.insertBefore(newTh, insertBeforeTh);
+      // Add empty placeholder cells for every body row.
+      table.querySelectorAll("tbody tr").forEach(function (tr) {
+        var addColCell = tr.querySelector(".add-col-th");
+        var td = document.createElement("td");
+        td.className = "qty-cell zero";
+        td.setAttribute("data-diameter", d);
+        td.textContent = "—";
+        var existingCells = Array.prototype.slice.call(tr.querySelectorAll("td.qty-cell"));
+        var beforeCell = addColCell;
+        for (var j = 0; j < existingCells.length; j++) {
+          if (parseFloat(existingCells[j].getAttribute("data-diameter")) > d) { beforeCell = existingCells[j]; break; }
+        }
+        tr.insertBefore(td, beforeCell);
+      });
+    });
+  }
+
+  // ===== Excel-style filters =====
+  var activeFilters = {};
+  function distinctValues(col) {
+    var rows = table.querySelectorAll("tbody tr");
+    var seen = {}, out = [];
+    rows.forEach(function (tr) {
+      var v = tr.getAttribute("data-" + col);
+      if (v === null || v === "") v = "(blank)";
+      if (!(v in seen)) { seen[v] = true; out.push(v); }
+    });
+    out.sort(function (a, b) {
+      var na = parseFloat(a), nb = parseFloat(b);
+      if (!isNaN(na) && !isNaN(nb)) return na - nb;
+      return String(a).localeCompare(String(b));
+    });
+    return out;
+  }
+  function applyFilters() {
+    table.querySelectorAll("tbody tr").forEach(function (tr) {
+      var ok = true;
+      Object.keys(activeFilters).forEach(function (col) {
+        var sel = activeFilters[col]; if (!sel) return;
+        var v = tr.getAttribute("data-" + col); if (v === null || v === "") v = "(blank)";
+        if (!sel.has(v)) ok = false;
+      });
+      tr.classList.toggle("hidden-by-filter", !ok);
+    });
+    headerRow.querySelectorAll(".filter-btn").forEach(function (btn) {
+      btn.classList.toggle("active", !!activeFilters[btn.getAttribute("data-col")]);
+    });
+  }
+  function closePopup() { var p = document.querySelector(".filter-popup"); if (p) p.remove(); }
+  function openPopup(btn) {
+    closePopup();
+    var col = btn.getAttribute("data-col");
+    var values = distinctValues(col);
+    var selected = activeFilters[col] || new Set(values);
+    var pop = document.createElement("div"); pop.className = "filter-popup";
+    var head = document.createElement("div"); head.className = "popup-head";
+    var search = document.createElement("input"); search.type = "text"; search.placeholder = "Search…";
+    head.appendChild(search);
+    var toggleAll = document.createElement("a"); toggleAll.className = "toggle-all"; toggleAll.href = "#"; toggleAll.textContent = "All";
+    head.appendChild(toggleAll); pop.appendChild(head);
+    var listWrap = document.createElement("div"); pop.appendChild(listWrap);
+    function renderList(q) {
+      listWrap.innerHTML = ""; q = (q || "").toLowerCase();
+      values.forEach(function (v) {
+        if (q && String(v).toLowerCase().indexOf(q) === -1) return;
+        var label = document.createElement("label");
+        var cb = document.createElement("input"); cb.type = "checkbox"; cb.value = v; cb.checked = selected.has(v);
+        cb.addEventListener("change", function () { if (cb.checked) selected.add(v); else selected.delete(v); });
+        label.appendChild(cb); var span = document.createElement("span"); span.textContent = v; label.appendChild(span);
+        listWrap.appendChild(label);
+      });
+    }
+    renderList("");
+    search.addEventListener("input", function () { renderList(search.value); });
+    toggleAll.addEventListener("click", function (e) {
+      e.preventDefault();
+      var allOn = selected.size === values.length;
+      selected = new Set(allOn ? [] : values);
+      renderList(search.value);
+    });
+    var foot = document.createElement("div"); foot.className = "popup-foot";
+    var clearBtn = document.createElement("button"); clearBtn.type = "button"; clearBtn.textContent = "Clear";
+    clearBtn.addEventListener("click", function () { delete activeFilters[col]; applyFilters(); closePopup(); });
+    var applyBtn = document.createElement("button"); applyBtn.type = "button"; applyBtn.textContent = "Apply";
+    applyBtn.style.background = "var(--navy-700)"; applyBtn.style.color = "#fff"; applyBtn.style.border = "1px solid var(--navy-700)";
+    applyBtn.addEventListener("click", function () {
+      if (selected.size === values.length) delete activeFilters[col];
+      else activeFilters[col] = selected;
+      applyFilters(); closePopup();
+    });
+    foot.appendChild(clearBtn); foot.appendChild(applyBtn); pop.appendChild(foot);
+    btn.parentElement.parentElement.appendChild(pop);
+    setTimeout(function () { search.focus(); }, 0);
+    function offClick(ev) { if (!pop.contains(ev.target) && ev.target !== btn) { closePopup(); document.removeEventListener("mousedown", offClick); } }
+    document.addEventListener("mousedown", offClick);
+  }
+  headerRow.querySelectorAll(".filter-btn").forEach(function (btn) {
+    btn.addEventListener("click", function (ev) {
+      ev.stopPropagation();
+      if (document.querySelector(".filter-popup")) { closePopup(); return; }
+      openPopup(btn);
+    });
+  });
+
+  // Submit handler: dialog submission posts to /production/models/save which 303-redirects back to this page.
+  // Native <dialog> + form posting works out of the box; nothing special needed.
+})();
+</script>
+{% endblock %}

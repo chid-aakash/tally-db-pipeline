@@ -1,94 +1,338 @@
 {% extends "base.html" %}
-{% block title %}Daily Production Report{% endblock %}
+{% block title %}Avinash's Line Production Report{% endblock %}
 
 {% block content %}
 <style>
-  main { max-width: 1200px; }
-  .dpr-create { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr 1.5fr auto; gap: 10px; align-items: end; }
-  @media (max-width: 860px) {
+  main { max-width: none !important; padding-left: 16px; padding-right: 16px; }
+
+  .company-badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 12px; background: var(--navy-50); color: var(--navy-900);
+    border: 1px solid #c7d2fe; border-radius: 999px;
+    font-size: .82rem; font-weight: 600;
+  }
+  .company-badge .lbl { color: var(--ink-soft); font-weight: 500; text-transform: uppercase; letter-spacing: .04em; font-size: .68rem; }
+
+  /* Form layout: each field is a column sized by its content. */
+  .dpr-create {
+    display: grid;
+    grid-template-columns:
+      150px                /* Date     */
+      110px                /* Shift    */
+      110px                /* Line     */
+      minmax(220px, 1.4fr) /* Customer */
+      minmax(220px, 1.4fr) /* Model    */
+      auto;                /* Create   */
+    gap: 14px;
+    align-items: end;
+  }
+  .dpr-create label {
+    display: flex; flex-direction: column; gap: 5px;
+    font-size: .78rem; color: var(--ink-soft);
+    text-transform: uppercase; letter-spacing: .04em; font-weight: 600;
+  }
+  .dpr-create input,
+  .dpr-create select {
+    padding: 9px 11px; font-size: .95rem;
+    border: 1px solid var(--line); border-radius: 6px;
+    background: #fff; color: var(--ink); box-sizing: border-box;
+    width: 100%; height: 40px;
+  }
+  .dpr-create input:focus, .dpr-create select:focus {
+    outline: none; border-color: var(--navy-700);
+    box-shadow: 0 0 0 3px rgba(30,58,138,.12);
+  }
+  .dpr-create button[type="submit"] {
+    height: 40px; padding: 0 22px;
+    background: var(--navy-700); color: #fff;
+    border: 1px solid var(--navy-700); border-radius: 6px;
+    font-weight: 600; font-size: .95rem; cursor: pointer;
+    white-space: nowrap;
+  }
+  .dpr-create button[type="submit"]:hover { background: var(--navy-900); }
+  @media (max-width: 1100px) {
+    .dpr-create { grid-template-columns: repeat(3, 1fr); }
+    .dpr-create button[type="submit"] { grid-column: 1 / -1; justify-self: start; }
+  }
+  @media (max-width: 640px) {
     .dpr-create { grid-template-columns: 1fr 1fr; }
   }
+
+  /* Recent-reports filter strip — same form-control look as the create form. */
+  .dpr-filter { display: flex; gap: 14px; align-items: end; flex-wrap: wrap; }
+  .dpr-filter label {
+    display: flex; flex-direction: column; gap: 5px;
+    font-size: .78rem; color: var(--ink-soft);
+    text-transform: uppercase; letter-spacing: .04em; font-weight: 600;
+    margin: 0;
+  }
+  .dpr-filter input {
+    padding: 9px 11px; font-size: .95rem;
+    border: 1px solid var(--line); border-radius: 6px;
+    background: #fff; height: 40px; box-sizing: border-box;
+    width: 160px;
+  }
+  .dpr-filter button {
+    height: 40px; padding: 0 18px;
+    background: var(--navy-700); color: #fff;
+    border: 1px solid var(--navy-700); border-radius: 6px;
+    font-weight: 600; cursor: pointer;
+  }
+
   .dpr-table { width: 100%; border-collapse: collapse; font-size: .92rem; }
   .dpr-table th, .dpr-table td { padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: left; }
   .dpr-table th { background: var(--navy-50); color: var(--navy-900); }
   .dpr-table tr:hover td { background: rgba(30,58,138,0.03); }
-  .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: .78rem; font-weight: 600; }
-  .pill-draft { background: #fef3c7; color: #92400e; }
-  .pill-submitted { background: #dcfce7; color: #166534; }
-  .dpr-filter { display: flex; gap: 10px; align-items: end; margin-top: 10px; }
+  .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: .74rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+  .pill-draft { background: #fef3c7; color: #92400e; }       /* amber  */
+  .pill-saved { background: #ffedd5; color: #9a3412; }       /* orange */
+  .pill-submitted { background: #dcfce7; color: #166534; }   /* green  */
+
+  /* Icon-button row for Edit / Summary / Delete actions. */
+  .row-actions { display: inline-flex; gap: 6px; justify-content: flex-end; }
+  .icon-action {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 32px; height: 32px; border-radius: 6px;
+    background: #fff; border: 1px solid var(--line); color: var(--navy-700);
+    text-decoration: none; cursor: pointer; font-size: 1rem; line-height: 1;
+    padding: 0;
+  }
+  .icon-action:hover { background: var(--navy-50); border-color: var(--navy-700); }
+  .icon-action.danger { color: #b91c1c; border-color: #fecaca; }
+  .icon-action.danger:hover { background: #fee2e2; border-color: #fca5a5; }
+
+  /* Delete-confirm modal. */
+  dialog#dpr-del-dialog {
+    border: 1px solid var(--line); border-radius: 12px; padding: 0;
+    width: min(440px, 92vw); box-shadow: 0 20px 50px rgba(0,0,0,.18);
+  }
+  dialog#dpr-del-dialog::backdrop { background: rgba(15, 30, 69, .35); }
+  .ddm-head { padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(180deg, #fef2f2, #fff); }
+  .ddm-head h3 { margin: 0; font-size: 1.05rem; color: #991b1b; }
+  .ddm-body { padding: 16px 18px; font-size: .9rem; }
+  .ddm-body dl { display: grid; grid-template-columns: 110px 1fr; gap: 4px 12px; margin: 0; }
+  .ddm-body dt { color: var(--ink-soft); text-transform: uppercase; font-size: .72rem; letter-spacing: .04em; align-self: center; }
+  .ddm-body dd { margin: 0; font-weight: 600; color: var(--navy-900); }
+  .ddm-foot { padding: 12px 18px; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; gap: 8px; background: #fafafa; }
+  .ddm-foot button.cancel { background: #fff; border: 1px solid var(--line); color: var(--ink-soft); padding: 8px 16px; border-radius: 6px; cursor: pointer; }
+  .ddm-foot button.confirm { background: #b91c1c; border: 1px solid #b91c1c; color: #fff; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 600; }
+  .ddm-foot button.confirm:hover { background: #991b1b; }
 </style>
 
 <div class="card">
-  <h1 style="margin:0 0 4px">Daily Production Report</h1>
-  <p class="muted" style="margin:0">Shift-level output / rejection / rework tally. One report per line, shift and model.</p>
+  <h1 style="margin:0 0 4px">Avinash's Line Production Report</h1>
+  <p class="muted" style="margin:0">
+    Shift-level output / rejection / rework tally. One report per line, shift and model.
+    <span class="company-badge" style="margin-left:8px;"><span class="lbl">Company</span> {{ tally_company_name }}</span>
+  </p>
 </div>
 
 <div class="card">
   <h2 style="margin:0 0 10px; font-size:1.05rem; color:var(--navy-900);">New report</h2>
   <form method="post" action="/production/daily-report">
+    <input type="hidden" name="company" value="{{ tally_company_name }}">
     <div class="dpr-create">
-      <label>Company
-        <select name="company" required>
-          {% for c in companies %}
-          <option value="{{ c }}" {% if c == selected_company %}selected{% endif %}>{{ c }}</option>
-          {% endfor %}
-        </select>
+      <label>
+        <span>Date</span>
+        <input type="date" name="report_date" value="{{ today }}" required>
       </label>
-      <label>Date <input type="date" name="report_date" value="{{ today }}" required></label>
-      <label>Shift
+      <label>
+        <span>Shift</span>
         <select name="shift" required>
           {% for s in shift_options %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
         </select>
       </label>
-      <label>Line
+      <label>
+        <span>Line</span>
         <select name="line" required>
           {% for l in line_options %}<option value="{{ l }}">{{ l }}</option>{% endfor %}
         </select>
       </label>
-      <label>Model <input type="text" name="model" placeholder="e.g. Renz 3b" required></label>
+      <label>
+        <span>Customer</span>
+        <select id="dpr-new-customer" required>
+          <option value="">— select customer —</option>
+          {% for cust in models_by_customer.keys()|sort %}
+            <option value="{{ cust }}">{{ cust }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        <span>Model</span>
+        <select id="dpr-new-model" name="model" required>
+          <option value="">— pick a customer first —</option>
+        </select>
+      </label>
       <button type="submit">Create</button>
     </div>
   </form>
+  <script>
+    (function () {
+      var DPR_MODELS = {{ models_by_customer | tojson }};
+      var custSel = document.getElementById("dpr-new-customer");
+      var modelSel = document.getElementById("dpr-new-model");
+      function refill() {
+        var cust = custSel.value;
+        while (modelSel.options.length > 0) modelSel.remove(0);
+        if (!cust) {
+          var o = document.createElement("option");
+          o.value = ""; o.textContent = "— pick a customer first —";
+          modelSel.appendChild(o);
+          return;
+        }
+        var models = DPR_MODELS[cust] || [];
+        var ph = document.createElement("option");
+        ph.value = ""; ph.textContent = "— select model —";
+        modelSel.appendChild(ph);
+        models.forEach(function (m) {
+          var o = document.createElement("option");
+          o.value = m; o.textContent = m;
+          modelSel.appendChild(o);
+        });
+      }
+      custSel.addEventListener("change", refill);
+    })();
+  </script>
 </div>
 
 <div class="card">
   <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
     <h2 style="margin:0; font-size:1.05rem; color:var(--navy-900);">Recent reports</h2>
-    <form method="get" action="/production/daily-report" class="dpr-filter">
-      <label style="margin:0">Company
-        <select name="company" onchange="this.form.submit()">
-          {% for c in companies %}
-          <option value="{{ c }}" {% if c == selected_company %}selected{% endif %}>{{ c }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <label style="margin:0">Date <input type="date" name="date" value="{{ filter_date }}"></label>
-      <button type="submit" style="padding:8px 14px;">Filter</button>
-    </form>
+    <div style="display:flex; gap:14px; align-items:end; flex-wrap:wrap;">
+      {% if draft_count > 0 %}
+        <button type="button" id="bulk-del-btn"
+                style="height:40px; padding:0 16px; background:#fff; color:#b91c1c;
+                       border:1px solid #fecaca; border-radius:6px; font-weight:600;
+                       cursor:pointer; display:inline-flex; align-items:center; gap:6px;">
+          🗑 Delete all drafts ({{ draft_count }}{% if filter_date %} on this date{% endif %})
+        </button>
+      {% endif %}
+      <form method="get" action="/production/daily-report" class="dpr-filter">
+        <label>
+          <span>Date</span>
+          <input type="date" name="date" value="{{ filter_date }}">
+        </label>
+        <button type="submit">Filter</button>
+      </form>
+    </div>
   </div>
 
   <table class="dpr-table" style="margin-top:12px;">
     <thead>
-      <tr><th>Date</th><th>Shift</th><th>Line</th><th>Model</th><th>Status</th><th>Updated</th><th></th></tr>
+      <tr><th>Date</th><th>Shift</th><th>Line</th><th>Customer</th><th>Model</th><th>Status</th><th>Updated</th><th style="text-align:right;">Actions</th></tr>
     </thead>
     <tbody>
       {% for r in reports %}
       <tr>
-        <td>{{ r.report_date }}</td>
+        <td>{{ r.report_date|dmy }}</td>
         <td>{{ r.shift }}</td>
         <td>{{ r.line }}</td>
+        <td>{{ r.company_name or "—" }}</td>
         <td>{{ r.model or "—" }}</td>
         <td><span class="pill pill-{{ r.status }}">{{ r.status }}</span></td>
         <td class="muted" style="font-size:.82rem;">{{ r.updated_at.strftime("%d-%m %H:%M") if r.updated_at else "—" }}</td>
-        <td style="text-align:right;">
-          <a href="/production/daily-report/{{ r.id }}/edit" style="margin-right:8px;">Edit</a>
-          <a href="/production/daily-report/{{ r.id }}">Summary</a>
+        <td style="text-align:right; white-space:nowrap;">
+          <div class="row-actions">
+            {% if r.status in ('draft', 'saved') %}
+              <a class="icon-action" href="/production/daily-report/{{ r.id }}/edit" title="Edit">✏️</a>
+            {% endif %}
+            <a class="icon-action" href="/production/daily-report/{{ r.id }}" title="Summary / preview">👁</a>
+            {% if r.status == 'draft' %}
+              <button type="button" class="icon-action danger del-btn"
+                      title="Delete draft"
+                      data-id="{{ r.id }}"
+                      data-date="{{ r.report_date|dmy }}"
+                      data-shift="{{ r.shift }}"
+                      data-line="{{ r.line }}"
+                      data-customer="{{ r.company_name or '—' }}"
+                      data-model="{{ r.model or '—' }}"
+                      data-updated="{{ r.updated_at.strftime('%d-%m %H:%M') if r.updated_at else '—' }}">🗑</button>
+            {% endif %}
+          </div>
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="7" style="text-align:center; color:var(--muted); padding:24px;">No reports yet. Create one above.</td></tr>
+      <tr><td colspan="8" style="text-align:center; color:var(--muted); padding:24px;">No reports yet. Create one above.</td></tr>
       {% endfor %}
     </tbody>
   </table>
 </div>
+
+<!-- Delete confirmation modal — shows the report's key fields before destroying it. -->
+<dialog id="dpr-del-dialog">
+  <form method="post" id="dpr-del-form">
+    <div class="ddm-head">
+      <h3>🗑 Delete this draft DPR?</h3>
+    </div>
+    <div class="ddm-body">
+      <p style="margin:0 0 10px; color:var(--ink-soft);">
+        This will permanently remove the draft and all its hourly cells, hour-models, and rework data. This cannot be undone.
+      </p>
+      <dl>
+        <dt>Date</dt><dd id="ddm-date">—</dd>
+        <dt>Shift / Line</dt><dd id="ddm-shift-line">—</dd>
+        <dt>Customer</dt><dd id="ddm-customer">—</dd>
+        <dt>Model</dt><dd id="ddm-model">—</dd>
+        <dt>Last updated</dt><dd id="ddm-updated" class="muted">—</dd>
+      </dl>
+    </div>
+    <div class="ddm-foot">
+      <button type="button" class="cancel" id="ddm-cancel">Cancel</button>
+      <button type="submit" class="confirm">Delete draft</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Bulk delete-all-drafts modal. -->
+<dialog id="dpr-bulk-del-dialog" style="border:1px solid var(--line); border-radius:12px; padding:0; width:min(440px, 92vw); box-shadow:0 20px 50px rgba(0,0,0,.18);">
+  <form method="post" action="/production/daily-report/delete-all-drafts">
+    {% if filter_date %}<input type="hidden" name="date" value="{{ filter_date }}">{% endif %}
+    <div class="ddm-head">
+      <h3>🗑 Delete all draft DPRs?</h3>
+    </div>
+    <div class="ddm-body">
+      <p style="margin:0 0 10px;">
+        This will permanently delete <strong>{{ draft_count }}</strong> draft DPR{{ '' if draft_count == 1 else 's' }}
+        for <strong>{{ tally_company_name }}</strong>{% if filter_date %} on <strong>{{ filter_date }}</strong>{% endif %}.
+        Submitted reports will be left untouched.
+      </p>
+      <p style="margin:0; color:#991b1b; font-size:.86rem;">
+        All hourly cells, hour-models, and rework data attached to these drafts go with them. This cannot be undone.
+      </p>
+    </div>
+    <div class="ddm-foot">
+      <button type="button" class="cancel" id="ddm-bulk-cancel">Cancel</button>
+      <button type="submit" class="confirm">Delete {{ draft_count }} draft{{ '' if draft_count == 1 else 's' }}</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+(function () {
+  var bulkDlg = document.getElementById("dpr-bulk-del-dialog");
+  var bulkBtn = document.getElementById("bulk-del-btn");
+  var bulkCancel = document.getElementById("ddm-bulk-cancel");
+  if (bulkBtn && bulkDlg) {
+    bulkBtn.addEventListener("click", function () { bulkDlg.showModal(); });
+    bulkCancel.addEventListener("click", function () { bulkDlg.close(); });
+  }
+  var dlg = document.getElementById("dpr-del-dialog");
+  var form = document.getElementById("dpr-del-form");
+  var cancelBtn = document.getElementById("ddm-cancel");
+  cancelBtn.addEventListener("click", function () { dlg.close(); });
+  document.querySelectorAll(".del-btn").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var id = btn.getAttribute("data-id");
+      form.action = "/production/daily-report/" + id + "/delete";
+      document.getElementById("ddm-date").textContent = btn.getAttribute("data-date") || "—";
+      document.getElementById("ddm-shift-line").textContent =
+        (btn.getAttribute("data-shift") || "—") + "  ·  Line " + (btn.getAttribute("data-line") || "—");
+      document.getElementById("ddm-customer").textContent = btn.getAttribute("data-customer") || "—";
+      document.getElementById("ddm-model").textContent = btn.getAttribute("data-model") || "—";
+      document.getElementById("ddm-updated").textContent = btn.getAttribute("data-updated") || "—";
+      dlg.showModal();
+    });
+  });
+})();
+</script>
 {% endblock %}

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Daily Production Report — {{ report.report_date }} {{ report.shift }} L{{ report.line }} {{ report.model }}{% endblock %}
+{% block title %}Daily Production Report — {{ report.report_date|dmy }} {{ report.shift }} L{{ report.line }} {{ report.model }}{% endblock %}
 
 {% block content %}
 <style>
@@ -16,41 +16,52 @@
   /* Paper-form style */
   .paper {
     background: #fff; border: 2px solid #111; padding: 0; color: #000; font-family: Arial, sans-serif;
+    position: relative; overflow: hidden;
   }
-  .paper-head { display: grid; grid-template-columns: 1fr 2fr 1fr; border-bottom: 2px solid #111; }
-  .paper-head > div { padding: 8px 10px; border-right: 1px solid #111; }
+  .paper-watermark {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%) rotate(-20deg);
+    width: 60%; max-width: 520px; opacity: 0.07; pointer-events: none; z-index: 0;
+    filter: grayscale(100%);
+  }
+  .paper > *:not(.paper-watermark) { position: relative; z-index: 1; }
+  .paper-head { display: grid; grid-template-columns: 1fr 2.4fr 1fr; border-bottom: 2px solid #111; align-items: center; }
+  .paper-head > div { padding: 6px 8px; border-right: 1px solid #111; }
   .paper-head > div:last-child { border-right: 0; }
-  .paper-head .brand { font-weight: 800; font-size: 1.1rem; letter-spacing: .02em; }
-  .paper-head .title { text-align: center; font-weight: 800; font-size: 1.1rem; letter-spacing: .04em; text-transform: uppercase; }
-  .paper-head .doc { font-size: .78rem; line-height: 1.5; }
+  .paper-head .brand { display: flex; align-items: center; justify-content: center; }
+  .paper-head .brand img { height: 38px; width: auto; }
+  .paper-head .title { text-align: center; font-weight: 800; font-size: .95rem; letter-spacing: .04em; text-transform: uppercase; line-height: 1.2; }
+  .paper-head .title .sub { display: block; font-size: .8rem; font-weight: 700; margin-top: 2px; letter-spacing: .06em; }
+  .paper-head .doc { font-size: .62rem; line-height: 1.35; word-break: break-all; }
 
   .paper-meta { display: grid; grid-template-columns: repeat(4, 1fr); border-bottom: 2px solid #111; }
-  .paper-meta > div { padding: 6px 10px; border-right: 1px solid #111; font-size: .86rem; }
+  .paper-meta > div { padding: 4px 8px; border-right: 1px solid #111; font-size: .72rem; line-height: 1.3; }
   .paper-meta > div:last-child { border-right: 0; }
-  .paper-meta b { text-transform: uppercase; font-size: .72rem; letter-spacing: .06em; color: #444; }
+  .paper-meta b { text-transform: uppercase; font-size: .6rem; letter-spacing: .05em; color: #444; }
 
   .sec-title {
     background: #f3f4f6; border-top: 2px solid #111; border-bottom: 1px solid #111;
-    padding: 6px 10px; font-weight: 800; font-size: .82rem; letter-spacing: .06em; text-transform: uppercase;
+    padding: 4px 8px; font-weight: 800; font-size: .68rem; letter-spacing: .06em; text-transform: uppercase;
   }
-  table.ptable { width: 100%; border-collapse: collapse; font-size: .82rem; }
-  table.ptable th, table.ptable td { border: 1px solid #111; padding: 4px 6px; text-align: center; }
-  table.ptable th { background: #f3f4f6; font-weight: 700; }
-  table.ptable td.lab, table.ptable th.lab { text-align: left; padding-left: 8px; min-width: 220px; font-weight: 500; }
+  table.ptable { width: 100%; border-collapse: collapse; font-size: .66rem; table-layout: fixed; }
+  table.ptable th, table.ptable td { border: 1px solid #111; padding: 2px 3px; text-align: center; word-break: break-word; }
+  table.ptable th { background: #f3f4f6; font-weight: 700; font-size: .62rem; line-height: 1.15; }
+  table.ptable td.lab, table.ptable th.lab { text-align: left; padding-left: 6px; width: 18%; font-weight: 500; font-size: .62rem; }
+  table.ptable th.cum { width: 7%; background: #fef9c3; }
+  table.ptable td.cum { width: 7%; background: #fef3c7; }
   table.ptable tr.grp td { background: #eef2ff; font-weight: 700; text-align: left; padding-left: 8px; }
   table.ptable tr.totals td { background: #f3f4f6; font-weight: 700; }
   table.ptable td.cum, table.ptable th.cum { background: #fef3c7; }
   table.ptable td.zero { color: #999; }
 
-  .idle-box { padding: 10px; }
-  .idle-box table { width: 100%; border-collapse: collapse; font-size: .82rem; }
-  .idle-box th, .idle-box td { border: 1px solid #111; padding: 4px 8px; text-align: left; }
+  .idle-box { padding: 6px 8px; }
+  .idle-box table { width: 100%; border-collapse: collapse; font-size: .68rem; }
+  .idle-box th, .idle-box td { border: 1px solid #111; padding: 3px 6px; text-align: left; }
   .idle-box th { background: #f3f4f6; font-weight: 700; }
 
   .sig-row { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 2px solid #111; }
   .sig-row > div { padding: 28px 10px 8px; border-right: 1px solid #111; text-align: center; font-size: .78rem; }
   .sig-row > div:last-child { border-right: 0; }
-  .sig-name { font-weight: 600; font-size: .92rem; margin-bottom: 4px; }
+  .sig-name { font-weight: 600; font-size: .92rem; margin-bottom: 4px; min-height: 1.2em; }
   .sig-label { text-transform: uppercase; letter-spacing: .08em; color: #555; }
 
   .kpi-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 12px; }
@@ -73,7 +84,7 @@
   </div>
   <div style="display:flex; gap:8px;">
     <button type="button" onclick="window.print()">🖨 Print / Save PDF</button>
-    <button type="button" class="primary" disabled title="Coming soon — requires Tally posting rules to be defined">Post to Tally (disabled)</button>
+    <a class="primary" href="/production/line-voucher?company={{ report.company_name }}&date={{ report.report_date }}" title="Preview and post the consolidated SJ - LINE voucher for this date" style="display:inline-block; padding:6px 14px; border-radius:6px; text-decoration:none;">Post to Tally</a>
   </div>
 </div>
 
@@ -86,20 +97,25 @@
 
 <div class="card" style="padding:0;">
 <div class="paper">
+  {% if company_logo %}
+    <img class="paper-watermark" src="{{ company_logo }}" alt="">
+  {% endif %}
   <div class="paper-head">
-    <div class="brand">AVINASH<br><span style="font-weight:400; font-size:.7rem;">APPLIANCES PVT LTD</span></div>
-    <div class="title">Daily Production Report (Line {{ report.line }})</div>
+    <div class="brand">
+      {% if company_logo %}<img src="{{ company_logo }}" alt="{{ company_clean or report.company_name }}">{% else %}<span>{{ company_clean or report.company_name }}</span>{% endif %}
+    </div>
+    <div class="title">Daily Production Report<span class="sub">Line {{ report.line }}</span></div>
     <div class="doc">
-      <div>DOC NO: {{ report.doc_no or '—' }}</div>
+      <div>DOC NO: {{ default_doc_no }}</div>
       <div>REV NO: {{ report.rev_no or '—' }}</div>
-      <div>REV DATE: {{ report.rev_date or '—' }}</div>
+      <div>REV DATE: {{ report.rev_date or default_rev_date }}</div>
     </div>
   </div>
 
   <div class="paper-meta">
-    <div><b>Date</b><br>{{ report.report_date }}</div>
+    <div><b>Date</b><br>{{ report.report_date|dmy }}</div>
     <div><b>Shift</b><br>{{ report.shift }}</div>
-    <div><b>Model</b><br>{{ report.model or '—' }}</div>
+    <div><b>Model</b><br>{{ models_label or '—' }}</div>
     <div><b>Status</b><br>{{ report.status|upper }}</div>
   </div>
 
@@ -108,17 +124,26 @@
       <thead>
         <tr>
           <th class="lab">Description</th>
-          <th class="cum">Cumulative</th>
+          <th class="cum">CUM</th>
           {% for _key, label in hour_slots %}
             <th>{{ label }}</th>
           {% endfor %}
-          <th>Total</th>
         </tr>
+        {% if hour_model_chain or report.model %}
+        <tr>
+          <th class="lab" style="font-size:.6rem; text-transform:uppercase; color:#444;">Model</th>
+          <th class="cum"></th>
+          {% for key, _label in hour_slots %}
+            {% set m = hour_model_chain.get(key) or report.model or '—' %}
+            <th style="font-weight:600; font-size:.6rem; background:#fff;">{{ m }}</th>
+          {% endfor %}
+        </tr>
+        {% endif %}
       </thead>
       <tbody>
         {% if is_grouped %}
           {% for group_name, group_rows in rows_or_groups %}
-            <tr class="grp"><td colspan="{{ hour_slots|length + 3 }}">{{ group_name }}</td></tr>
+            <tr class="grp"><td colspan="{{ hour_slots|length + 2 }}">{{ group_name }}</td></tr>
             {% for r in group_rows %}{{ summary_row(section, r) }}{% endfor %}
           {% endfor %}
         {% else %}
@@ -126,13 +151,11 @@
         {% endif %}
         <tr class="totals">
           <td class="lab">Total</td>
-          {% set cv = totals[section].cols.get(cumulative_key, 0) %}
-          <td class="cum">{{ ('%.0f' % cv) if cv else '—' }}</td>
+          <td class="cum">{{ ('%.0f' % totals[section].total) if totals[section].total else '—' }}</td>
           {% for key, _label in hour_slots %}
             {% set v = totals[section].cols.get(key, 0) %}
             <td>{{ ('%.0f' % v) if v else '—' }}</td>
           {% endfor %}
-          <td>{{ '%.0f' % totals[section].total }}</td>
         </tr>
       </tbody>
     </table>
@@ -140,33 +163,55 @@
 
   {% macro summary_row(section, r) %}
     <tr>
+      {% set rt = totals[section].rows.get(r.key, 0) %}
       <td class="lab">{{ r.label }}</td>
-      {% set cv = cells[section][r.key][cumulative_key] %}
-      <td class="cum {% if not cv %}zero{% endif %}">{{ ('%.0f' % cv) if cv else '' }}</td>
+      <td class="cum {% if not rt %}zero{% endif %}">{{ ('%.0f' % rt) if rt else '' }}</td>
       {% for key, _label in hour_slots %}
         {% set v = cells[section][r.key][key] %}
         <td class="{% if not v %}zero{% endif %}">{{ ('%.0f' % v) if v else '' }}</td>
       {% endfor %}
-      <td>{{ ('%.0f' % totals[section].rows.get(r.key, 0)) if totals[section].rows.get(r.key, 0) else '—' }}</td>
     </tr>
   {% endmacro %}
 
   <div class="sec-title">Cumulative Production + Hourly Output Monitoring</div>
   {{ section_table("production", production_rows, is_grouped=False) }}
+  {% if production_by_model and production_by_model|length > 1 %}
+  <div style="padding:6px 10px; border-top:1px solid #111; font-size:.74rem;">
+    <div style="font-weight:800; text-transform:uppercase; letter-spacing:.05em; color:#444; margin-bottom:4px;">Output by model (within shift)</div>
+    <table style="width:100%; border-collapse:collapse;">
+      <thead>
+        <tr>
+          <th style="border:1px solid #111; background:#f3f4f6; padding:3px 6px; text-align:left; width:30%;">Model</th>
+          <th style="border:1px solid #111; background:#f3f4f6; padding:3px 6px; text-align:right; width:15%;">Output qty</th>
+          <th style="border:1px solid #111; background:#f3f4f6; padding:3px 6px; text-align:left;">Hours</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in production_by_model %}
+        <tr>
+          <td style="border:1px solid #111; padding:3px 6px; font-weight:600;">{{ row.model }}</td>
+          <td style="border:1px solid #111; padding:3px 6px; text-align:right;">{{ '%.0f' % row.qty }}</td>
+          <td style="border:1px solid #111; padding:3px 6px;">{{ row.hours|join(', ') }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
 
   <div class="sec-title">Cumulative Rejection + Hourly Rejection Monitoring</div>
   {{ section_table("rejection", rejection_groups, is_grouped=True) }}
   <div style="padding:6px 10px; border-top:1px solid #111; display:grid; grid-template-columns:1fr 1fr; gap:10px; font-size:.82rem;">
-    <div><b>Total Rejection:</b> {{ '%.0f' % totals.rejection.total }}</div>
-    <div><b>Rejection %:</b> {{ '%.2f' % totals.rejection_pct }}%</div>
+    <div style="color:#b91c1c; font-weight:800;">Total Rejection: {{ '%.0f' % totals.rejection.total }}</div>
+    <div style="color:#b91c1c; font-weight:800;">Rejection %: {{ '%.2f' % totals.rejection_pct }}%</div>
   </div>
 
   <div class="sec-title">Cumulative Rework + Hourly Rework Monitoring</div>
   {{ section_table("rework", rework_rows, is_grouped=False) }}
   <div style="padding:6px 10px; border-top:1px solid #111; display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; font-size:.82rem;">
-    <div><b>Total Rework:</b> {{ '%.0f' % totals.rework.total }}</div>
-    <div><b>Rework %:</b> {{ '%.2f' % totals.rework_pct }}%</div>
-    <div><b>Rework Cleared Qty:</b> {{ '%.0f' % report.rework_cleared_qty if report.rework_cleared_qty else '—' }}</div>
+    <div style="color:#a16207; font-weight:800;">Total Rework: {{ '%.0f' % totals.rework.total }}</div>
+    <div style="color:#a16207; font-weight:800;">Rework %: {{ '%.2f' % totals.rework_pct }}%</div>
+    <div style="color:#a16207; font-weight:800;">Rework Cleared Qty: {{ '%.0f' % report.rework_cleared_qty if report.rework_cleared_qty else '—' }}</div>
   </div>
 
   <div class="sec-title">Idle Time Monitoring</div>
@@ -200,15 +245,15 @@
 
   <div class="sig-row">
     <div>
-      <div class="sig-name">{{ report.supervisor_name or '&nbsp;' }}</div>
+      <div class="sig-name">{{ report.supervisor_name or '—' }}</div>
       <div class="sig-label">Supervisor — Name &amp; Sign</div>
     </div>
     <div>
-      <div class="sig-name">{{ report.incharge_name or '&nbsp;' }}</div>
+      <div class="sig-name">{{ report.incharge_name or '—' }}</div>
       <div class="sig-label">Production In-charge — Name &amp; Sign</div>
     </div>
     <div>
-      <div class="sig-name">{{ report.head_name or '&nbsp;' }}</div>
+      <div class="sig-name">{{ report.head_name or '—' }}</div>
       <div class="sig-label">Production Head — Name &amp; Sign</div>
     </div>
   </div>

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Edit Daily Production Report — {{ report.report_date }} {{ report.shift }} L{{ report.line }}{% endblock %}
+{% block title %}Edit Daily Production Report — {{ report.report_date|dmy }} {{ report.shift }} L{{ report.line }}{% endblock %}
 
 {% block content %}
 <style>
@@ -86,28 +86,56 @@
     and add rows from the catalog before this report can be filled in.</span>
 </div>
 {% endif %}
+<div style="background:#eff6ff; border:1px solid #bfdbfe; border-radius:8px; padding:10px 14px; margin-bottom:12px; font-size:.9rem; display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+  <div style="flex:1; min-width:240px;">
+    <strong>📋 Summary view.</strong> Hourly values are locked here — click the <em>✎ edit</em> link in any hour column to enter that hour's values on a focused page.
+  </div>
+  <div style="display:flex; gap:8px; flex-wrap:wrap;">
+    <a href="/production/daily-report/{{ report.id }}/import/template"
+       style="background:#fff; border:1px solid var(--line); padding:6px 12px; border-radius:6px; text-decoration:none; color:var(--navy-900); font-weight:600; font-size:.85rem;">
+      ⬇ Download Excel template
+    </a>
+    <button type="button" onclick="document.getElementById('dpr-import-input').click()"
+       style="background:var(--navy-700); color:#fff; border:0; padding:6px 12px; border-radius:6px; cursor:pointer; font-weight:600; font-size:.85rem;">
+      ⬆ Import from Excel
+    </button>
+    <form id="dpr-import-form" method="post" enctype="multipart/form-data"
+          action="/production/daily-report/{{ report.id }}/import" style="display:none;">
+      <input type="file" id="dpr-import-input" name="file" accept=".xlsx"
+             onchange="if(this.files.length){if(confirm('Import this file? Existing hourly cells and idle events for this report will be replaced.')){document.getElementById('dpr-import-form').submit();}else{this.value='';}}">
+    </form>
+  </div>
+</div>
 <form method="post" action="/production/daily-report/{{ report.id }}/save" id="dpr-form">
   {# --- Sticky meta bar + live KPIs --- #}
   <div class="dpr-meta">
     <div class="dpr-meta-row">
-      <div><div class="ml">Date</div><div class="mv">{{ report.report_date }}</div></div>
+      <div><div class="ml">Date</div><div class="mv">{{ report.report_date|dmy }}</div></div>
       <div><div class="ml">Shift</div><div class="mv">{{ report.shift }}</div></div>
       <div><div class="ml">Line</div><div class="mv">{{ report.line }}</div></div>
       <div>
         <div class="ml">Model</div>
-        <input type="text" name="model" value="{{ report.model or '' }}" required
-               style="font-weight:700; color:var(--navy-900); border:1px solid var(--line); border-radius:6px; padding:6px 8px; width:100%;">
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <input type="text" name="model" value="{{ report.model or '' }}" required
+                 style="font-weight:700; color:var(--navy-900); border:1px solid var(--line); border-radius:6px; padding:6px 8px; flex:1; min-width:120px;">
+          {% if distinct_models|length > 1 %}
+            <span style="font-weight:700; color:var(--navy-900); font-size:.9rem;">
+              {% for m in distinct_models %}{% if not loop.first %} | {% endif %}{{ m }}{% endfor %}
+            </span>
+          {% endif %}
+        </div>
       </div>
       <div class="muted" style="font-size:.76rem;">
         <div>Company</div>
-        <div style="color:var(--ink);">{{ report.company_name }}</div>
+        <div style="color:var(--ink); font-weight:700;">{{ report.company_name }}</div>
       </div>
     </div>
-    <div class="dpr-kpis">
-      <div class="kpi"><div class="k-label">Output (Washing)</div><div class="k-val" id="kpi-output">{{ '%.0f' % totals.output_for_pct }}</div></div>
+    <div class="dpr-kpis" style="grid-template-columns: repeat(5, 1fr);">
+      <div class="kpi"><div class="k-label">Line Input</div><div class="k-val" id="kpi-input">{{ '%.0f' % totals.input_for_pct }}</div></div>
       <div class="kpi"><div class="k-label">Rejection</div><div class="k-val" id="kpi-rej">{{ '%.0f' % totals.rejection.total }}</div></div>
       <div class="kpi"><div class="k-label">Rejection %</div><div class="k-val" id="kpi-rej-pct">{{ '%.1f' % totals.rejection_pct }}%</div></div>
       <div class="kpi"><div class="k-label">Rework</div><div class="k-val" id="kpi-rw">{{ '%.0f' % totals.rework.total }}</div></div>
+      <div class="kpi"><div class="k-label">Rework %</div><div class="k-val" id="kpi-rw-pct">{{ '%.1f' % totals.rework_pct }}%</div></div>
     </div>
   </div>
 
@@ -120,16 +148,40 @@
           {% for key, label in hour_slots %}
             <th>
               <input type="text" name="hour_label__{{ key }}" value="{{ label }}"
-                     style="font-weight:600; font-size:.9rem; text-align:center;">
+                     style="font-weight:600; font-size:.72rem; text-align:center; padding:2px 1px; letter-spacing:-0.01em;">
+              <div style="margin-top:2px;">
+                <a href="/production/daily-report/{{ report.id }}/entry?hour={{ key }}"
+                   style="font-size:.74rem; color:var(--navy-700); text-decoration:none;"
+                   title="Edit values for {{ label }}">✎ edit</a>
+              </div>
             </th>
           {% endfor %}
-          <th>Total</th>
+        </tr>
+        <tr>
+          <th class="row-label" style="font-size:.72rem; color:var(--muted); text-transform:uppercase; letter-spacing:.04em;">Model running</th>
+          <th class="cum" style="background:#fef3c7;"></th>
+          {% for key, _label in hour_slots %}
+            {# Editable inputs live only on the production grid (the canonical
+               source). Rejection / rework grids re-render the resolved model
+               read-only so the operator can correlate defects with the model
+               that was running, without duplicating form fields. #}
+            <th style="background:#fff;">
+              {% if section == "production" %}
+                <input type="text" name="hour_model__{{ key }}"
+                       value="{{ hour_models.get(key, '') }}"
+                       placeholder="{{ hour_model_chain.get(key) or report.model or '—' }}"
+                       style="font-size:.78rem; text-align:center; padding:3px 2px; color:var(--navy-900); border:1px dashed var(--line); border-radius:4px; background:#fff; width:100%;">
+              {% else %}
+                <span style="font-size:.78rem; font-weight:600; color:var(--navy-900);">{{ hour_model_chain.get(key) or report.model or '—' }}</span>
+              {% endif %}
+            </th>
+          {% endfor %}
         </tr>
       </thead>
       <tbody>
         {% if is_grouped %}
           {% for group_name, group_rows in rows_or_groups %}
-            <tr class="grp-head"><td class="row-label" colspan="{{ hour_slots|length + 3 }}">{{ group_name }}</td></tr>
+            <tr class="grp-head"><td class="row-label" colspan="{{ hour_slots|length + 2 }}">{{ group_name }}</td></tr>
             {% for r in group_rows %}
               {{ grid_row(section, r) }}
             {% endfor %}
@@ -142,11 +194,10 @@
         {# Column totals footer #}
         <tr class="total-row">
           <td class="row-label">Total</td>
-          <td class="cum" data-col-total="{{ cumulative_key }}">{{ '%.0f' % totals[section].cols.get(cumulative_key, 0) }}</td>
+          <td class="cum" data-col-total="{{ cumulative_key }}">{{ '%.0f' % totals[section].total }}</td>
           {% for key, _label in hour_slots %}
             <td data-col-total="{{ key }}">{{ '%.0f' % totals[section].cols.get(key, 0) }}</td>
           {% endfor %}
-          <td data-grand-total>{{ '%.0f' % totals[section].total }}</td>
         </tr>
       </tbody>
     </table>
@@ -155,22 +206,38 @@
   {% macro grid_row(section, r) %}
     <tr data-row-key="{{ r.key }}">
       <td class="row-label">{{ r.label }}</td>
-      <td class="cum">
-        <input type="number" step="any" min="0" class="cell-input cell-cum"
-               name="cell__{{ section }}__{{ r.key }}__{{ cumulative_key }}"
-               value="{{ ('%.0f' % cells[section][r.key][cumulative_key]) if cells[section][r.key][cumulative_key] else '' }}">
-      </td>
+      <td class="cum" data-cum-row>{{ '%.0f' % totals[section].rows.get(r.key, 0) }}</td>
       {% for key, _label in hour_slots %}
         <td>
-          <input type="number" step="any" min="0" class="cell-input cell-hour"
+          <input type="number" step="any" min="0" class="cell-input cell-hour" readonly
                  data-hour-key="{{ key }}"
                  name="cell__{{ section }}__{{ r.key }}__{{ key }}"
                  value="{{ ('%.0f' % cells[section][r.key][key]) if cells[section][r.key][key] else '' }}">
         </td>
       {% endfor %}
-      <td data-row-total>{{ '%.0f' % totals[section].rows.get(r.key, 0) }}</td>
     </tr>
   {% endmacro %}
+
+  <details class="dpr-sec" open>
+    <summary>0 · Signatures &amp; document meta</summary>
+    <div class="sec-body" style="display:grid; grid-template-columns: repeat(3, 1fr); gap:14px;">
+      <label>Supervisor <span style="color:#b91c1c;">*</span>
+        <input type="text" name="supervisor_name" value="{{ report.supervisor_name or '' }}" required>
+      </label>
+      <label>Production In-charge <input type="text" name="incharge_name" value="{{ report.incharge_name or '' }}"></label>
+      <label>Production Head <input type="text" name="head_name" value="{{ report.head_name or '' }}"></label>
+      <label>Doc No
+        <input type="text" name="doc_no" value="{{ default_doc_no }}">
+      </label>
+      <label>Rev No <input type="text" name="rev_no" value="{{ report.rev_no or '' }}"></label>
+      <label>Rev Date
+        <input type="text" name="rev_date" value="{{ report.rev_date or default_rev_date }}" placeholder="DD/MM/YYYY">
+      </label>
+      <label style="grid-column: 1 / -1;">Narration
+        <textarea name="narration" rows="2">{{ report.narration or '' }}</textarea>
+      </label>
+    </div>
+  </details>
 
   <details class="dpr-sec" open>
     <summary>1 · Production — hourly output per process</summary>
@@ -189,12 +256,19 @@
   <details class="dpr-sec">
     <summary>3 · Rework — hourly rework counts</summary>
     <div class="sec-body">
-      {{ grid("rework", rework_rows, is_grouped=False) }}
-      <div style="margin-top:12px; display:grid; grid-template-columns: 1fr 1fr 1fr; gap:14px;">
-        <label>Rework Cleared Qty
-          <input type="number" step="any" min="0" name="rework_cleared_qty" value="{{ '%.0f' % report.rework_cleared_qty if report.rework_cleared_qty else '' }}">
-        </label>
-      </div>
+      {% if rework_rows %}
+        {{ grid("rework", rework_rows, is_grouped=False) }}
+        <div style="margin-top:12px; display:grid; grid-template-columns: 1fr 1fr 1fr; gap:14px;">
+          <label>Rework Cleared Qty
+            <input type="number" step="any" min="0" name="rework_cleared_qty" value="{{ '%.0f' % report.rework_cleared_qty if report.rework_cleared_qty else '' }}">
+          </label>
+        </div>
+      {% else %}
+        <p class="muted" style="margin:6px 0; font-style:italic; font-size:.9rem;">
+          No rework parameters configured for Line {{ report.line }}.
+          <a href="/production/processes/{{ report.line }}?company={{ report.company_name }}#sec-rework">Configure</a> to enable rework tracking.
+        </p>
+      {% endif %}
     </div>
   </details>
 
@@ -233,89 +307,83 @@
     </div>
   </details>
 
-  <details class="dpr-sec">
-    <summary>5 · Signatures & document meta</summary>
-    <div class="sec-body" style="display:grid; grid-template-columns: repeat(3, 1fr); gap:14px;">
-      <label>Supervisor <input type="text" name="supervisor_name" value="{{ report.supervisor_name or '' }}"></label>
-      <label>Production In-charge <input type="text" name="incharge_name" value="{{ report.incharge_name or '' }}"></label>
-      <label>Production Head <input type="text" name="head_name" value="{{ report.head_name or '' }}"></label>
-      <label>Doc No <input type="text" name="doc_no" value="{{ report.doc_no or '' }}"></label>
-      <label>Rev No <input type="text" name="rev_no" value="{{ report.rev_no or '' }}"></label>
-      <label>Rev Date <input type="text" name="rev_date" value="{{ report.rev_date or '' }}" placeholder="DD/MM/YYYY"></label>
-      <label style="grid-column: 1 / -1;">Narration
-        <textarea name="narration" rows="2">{{ report.narration or '' }}</textarea>
-      </label>
-    </div>
-  </details>
 
   <div class="dpr-actions">
     <a href="/production/daily-report" class="ghost" style="padding:8px 14px; border-radius:8px; text-decoration:none;">← Back to list</a>
     <div style="display:flex; gap:8px;">
       <button type="submit" name="action" value="save" class="ghost">Save draft</button>
-      <button type="submit" name="action" value="submit">Save & submit</button>
-      <a href="/production/daily-report/{{ report.id }}" style="padding:8px 14px; border-radius:8px; background:var(--surface-2); color:var(--navy-900); border:1px solid var(--line); text-decoration:none; font-weight:600;">View summary →</a>
+      <button type="submit" name="action" value="submit"
+              title="Marks this report as Saved (ready to post). Status changes to SUBMITTED only after the SJ - LINE voucher is pushed to Tally.">
+        Save (mark ready)
+      </button>
+      <button type="submit" name="action" value="view"
+              style="padding:8px 14px; border-radius:8px; background:var(--surface-2); color:var(--navy-900); border:1px solid var(--line); font-weight:600; cursor:pointer;">
+        Save & view summary →
+      </button>
     </div>
   </div>
 </form>
 
 <script>
 (function () {
-  // --- Live totals + KPI computation ---
-  function recompute() {
-    var totals = {production: 0, rejection: 0, rework: 0};
-    var washing = 0;
-
-    document.querySelectorAll("table.hgrid").forEach(function (tbl) {
-      var section = tbl.dataset.section;
-      var colSums = {};
-      // Per-row totals (exclude cumulative)
-      tbl.querySelectorAll("tbody tr[data-row-key]").forEach(function (tr) {
-        var rowKey = tr.dataset.rowKey;
-        var rowTotal = 0;
-        tr.querySelectorAll("input.cell-hour").forEach(function (inp) {
-          var v = parseFloat(inp.value) || 0;
-          rowTotal += v;
-          var hk = inp.dataset.hourKey;
-          colSums[hk] = (colSums[hk] || 0) + v;
-        });
-        var tot = tr.querySelector("[data-row-total]");
-        if (tot) tot.textContent = rowTotal.toFixed(0);
-        // Track washing row for output denominator in %
-        if (section === "production" && rowKey === "washing_incl_rework") washing = rowTotal;
-        totals[section] += rowTotal;
-        // Cumulative cell aggregated separately
-        var cumInp = tr.querySelector("input.cell-cum");
-        if (cumInp) {
-          colSums["__cum__"] = (colSums["__cum__"] || 0) + (parseFloat(cumInp.value) || 0);
-        }
-      });
-      // Footer column totals
-      tbl.querySelectorAll("tr.total-row td[data-col-total]").forEach(function (td) {
-        var hk = td.dataset.colTotal;
-        var v = hk === "{{ cumulative_key }}" ? (colSums["__cum__"] || 0) : (colSums[hk] || 0);
-        td.textContent = v.toFixed(0);
-      });
-      var grand = tbl.querySelector("tr.total-row td[data-grand-total]");
-      if (grand) grand.textContent = totals[section].toFixed(0);
-    });
-
-    // KPI bar
-    document.getElementById("kpi-output").textContent = washing.toFixed(0);
-    document.getElementById("kpi-rej").textContent = totals.rejection.toFixed(0);
-    document.getElementById("kpi-rw").textContent = totals.rework.toFixed(0);
-    var pct = washing > 0 ? (totals.rejection / washing * 100) : 0;
-    var rejKpi = document.getElementById("kpi-rej-pct");
-    rejKpi.textContent = pct.toFixed(1) + "%";
-    rejKpi.parentElement.classList.toggle("warn", pct > 5);
-  }
-  document.addEventListener("input", function (e) {
-    if (e.target && e.target.classList && (e.target.classList.contains("cell-hour") || e.target.classList.contains("cell-cum"))) {
-      recompute();
-    }
-  });
+  // Hourly cells are read-only on this view; server-rendered totals are
+  // authoritative. JS only manages the editable idle-event rows below.
 
   // --- Idle events: add / remove rows ---
   var rows = document.getElementById("idle-rows");
+
+  // Auto-fill Time Loss (minutes) from From/To. Triggered on input/change of
+  // either side. Skips rows where the user has already typed a manual value
+  // (data-manual="1"), so explicit overrides are preserved.
+  function parseHHMM(v) {
+    v = (v || "").trim();
+    if (!v) return null;
+    var m = v.match(/^(\d{1,2}):?(\d{2})$/);
+    if (!m) return null;
+    var h = parseInt(m[1], 10), mi = parseInt(m[2], 10);
+    if (isNaN(h) || isNaN(mi) || h < 0 || h > 47 || mi < 0 || mi > 59) return null;
+    return h * 60 + mi;
+  }
+  function recalcRow(tr) {
+    var fromEl = tr.querySelector('input[name$="__from"]');
+    var toEl   = tr.querySelector('input[name$="__to"]');
+    var lossEl = tr.querySelector('input[name$="__time_loss"]');
+    if (!fromEl || !toEl || !lossEl) return;
+    if (lossEl.dataset.manual === "1") return;  // user typed it themselves
+    var f = parseHHMM(fromEl.value);
+    var t = parseHHMM(toEl.value);
+    if (f === null || t === null) return;
+    var diff = t - f;
+    if (diff < 0) diff += 24 * 60;  // overnight wrap
+    lossEl.value = String(diff);
+  }
+  function wireRow(tr) {
+    var lossEl = tr.querySelector('input[name$="__time_loss"]');
+    if (lossEl && !lossEl.dataset.wired) {
+      lossEl.dataset.wired = "1";
+      lossEl.addEventListener("input", function () {
+        // If user clears it, fall back to auto-calc; else mark manual.
+        lossEl.dataset.manual = lossEl.value === "" ? "0" : "1";
+        if (lossEl.value === "") recalcRow(tr);
+      });
+    }
+    ["from", "to"].forEach(function (suffix) {
+      var el = tr.querySelector('input[name$="__' + suffix + '"]');
+      if (el && !el.dataset.wired) {
+        el.dataset.wired = "1";
+        el.addEventListener("input", function () { recalcRow(tr); });
+        el.addEventListener("change", function () { recalcRow(tr); });
+      }
+    });
+  }
+  rows.querySelectorAll("tr").forEach(function (tr) {
+    wireRow(tr);
+    // Backfill Time Loss for Excel-imported rows that have From/To filled
+    // but no minutes typed yet.
+    var lossEl = tr.querySelector('input[name$="__time_loss"]');
+    if (lossEl && !lossEl.value) recalcRow(tr);
+  });
+
   document.getElementById("add-idle").addEventListener("click", function () {
     var idx = rows.querySelectorAll("tr").length;
     // Find a guaranteed-unique idx by scanning existing ordinals (in case of deletes)
@@ -332,6 +400,7 @@
       return '<td><input type="' + type + '" name="idle__' + idx + '__' + f + '"' + ph + '></td>';
     }).join("") + '<td><button type="button" class="idle-del" title="Remove">×</button></td>';
     rows.appendChild(tr);
+    wireRow(tr);
   });
   rows.addEventListener("click", function (e) {
     if (e.target && e.target.classList.contains("idle-del")) {
@@ -340,8 +409,6 @@
     }
   });
 
-  // Prime the KPIs on first paint (covers server-rendered zero-cells correctly).
-  recompute();
 })();
 </script>
 {% endblock %}

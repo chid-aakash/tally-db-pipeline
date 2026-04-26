@@ -1,0 +1,205 @@
+{% extends "base.html" %}
+{% block title %}Production Review{% endblock %}
+{% block content %}
+<style>
+  .review-head {
+    display: flex; justify-content: space-between; align-items: center;
+    flex-wrap: wrap; gap: 10px; margin-bottom: 14px;
+  }
+  .review-head h1 { margin: 0; }
+  .controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .controls label { margin: 0; }
+  .controls input, .controls select { width: auto; padding: 6px 10px; }
+
+  .board {
+    background: var(--surface);
+    border: 1px solid rgba(30,58,138,0.10);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-sm);
+    margin-bottom: 18px;
+    overflow: hidden;
+  }
+  .board-title {
+    background: linear-gradient(135deg, var(--navy-900), var(--navy-700));
+    color: #fff; padding: 10px 16px;
+    display: flex; justify-content: space-between; align-items: center;
+    font-weight: 600; letter-spacing: 0.3px;
+  }
+  .board-title .session-hrs {
+    font-size: 0.85rem; opacity: 0.9; background: rgba(255,255,255,0.12);
+    padding: 2px 10px; border-radius: 999px;
+  }
+
+  .review-table { width: 100%; border-collapse: collapse; }
+  .review-table th, .review-table td {
+    padding: 10px; border-bottom: 1px solid var(--line);
+    text-align: center; font-size: 0.92rem;
+  }
+  .review-table th {
+    background: var(--surface-2); color: var(--ink-soft);
+    font-weight: 600; white-space: nowrap;
+  }
+  .review-table td.line-name {
+    text-align: left; font-weight: 600; color: var(--navy-900);
+    background: #fafbff;
+  }
+  .num-link {
+    display: inline-block; min-width: 44px; padding: 4px 10px;
+    background: #eef2ff; border-radius: 6px; font-weight: 600;
+    color: var(--navy-900); text-decoration: none;
+    transition: background var(--t-fast), transform var(--t-fast);
+  }
+  .num-link:hover { background: #dbe4ff; transform: translateY(-1px); }
+  .num-link.muted { background: transparent; color: var(--muted); font-weight: 400; }
+  .num-link.pct { background: #fef3e7; color: #9a3412; }
+  .num-link.pct:hover { background: #fde0bf; }
+
+  .check-cell { display: inline-flex; align-items: center; justify-content: center; }
+  .check-cell input[type=checkbox] {
+    width: 18px; height: 18px; accent-color: var(--ok); cursor: pointer;
+  }
+
+  .review-table tr.total-row td {
+    background: #fff7e6; font-weight: 700; color: var(--navy-900);
+    border-top: 2px solid var(--orange-400);
+  }
+  .empty-msg {
+    padding: 28px; text-align: center; color: var(--muted);
+  }
+</style>
+
+<div class="review-head">
+  <h1>Production Review</h1>
+  <div class="controls">
+    <label for="reviewDate">Date</label>
+    <input type="date" id="reviewDate" value="{{ review_date }}">
+    <label for="cutoffSel">Until</label>
+    <select id="cutoffSel">
+      {% for opt in cutoff_options %}
+      <option value="{{ opt.key }}" {% if opt.key == cutoff_key %}selected{% endif %}>{{ opt.display }}</option>
+      {% endfor %}
+    </select>
+  </div>
+</div>
+
+{% if not lines %}
+<div class="card empty-msg">
+  No Daily Production Reports found for <strong>{{ review_date }}</strong>.
+  <div style="margin-top:8px;"><a class="btn" href="/production/daily-report">Open DPR list</a></div>
+</div>
+{% else %}
+
+{% macro num_link(value, line, fmt='int', cls='') -%}
+  {%- set rid = report_id_by_line.get(line) -%}
+  {%- if value and value != 0 -%}
+    {%- if fmt == 'pct' -%}
+      {%- set txt = "%.1f%%"|format(value) -%}
+    {%- else -%}
+      {%- set txt = value|int -%}
+    {%- endif -%}
+    {%- if rid -%}
+      <a class="num-link {{ cls }}" href="/production/daily-report/{{ rid }}/edit">{{ txt }}</a>
+    {%- else -%}
+      <span class="num-link {{ cls }}">{{ txt }}</span>
+    {%- endif -%}
+  {%- else -%}
+    <span class="num-link muted">—</span>
+  {%- endif -%}
+{%- endmacro %}
+
+<div class="board">
+  <div class="board-title">
+    <span>AAPL — Line Review Board</span>
+    <span class="session-hrs">{{ cutoff_display }}</span>
+  </div>
+  <div class="table-wrap">
+    <table class="review-table">
+      <thead>
+        <tr>
+          <th>Line</th>
+          <th>Input</th>
+          <th>Actual<br><span style="font-weight:400;font-size:0.75rem;color:var(--muted);">(Input − Rej)</span></th>
+          <th>Rej Nos</th>
+          <th>Rej %</th>
+          <th>Rework</th>
+          <th>Rework %</th>
+          <th>Quality</th>
+          <th>Safety</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% set tot = namespace(input=0, actual=0, rej=0, rework=0) %}
+        {% for line in lines %}
+        {% set src = prefill.get(line, {}) %}
+        {% set inp = src.get('input', 0) %}
+        {% set rej = src.get('rej', 0) %}
+        {% set rwk = src.get('rework', 0) %}
+        {% set act = src.get('actual', 0) %}
+        {% set rej_pct = (rej / inp * 100) if inp else 0 %}
+        {% set rwk_pct = (rwk / inp * 100) if inp else 0 %}
+        {% set tot.input = tot.input + inp %}
+        {% set tot.actual = tot.actual + act %}
+        {% set tot.rej = tot.rej + rej %}
+        {% set tot.rework = tot.rework + rwk %}
+        <tr data-line="{{ line }}">
+          <td class="line-name">{{ line }}</td>
+          <td>{{ num_link(inp, line) }}</td>
+          <td>{{ num_link(act, line) }}</td>
+          <td>{{ num_link(rej, line) }}</td>
+          <td>{{ num_link(rej_pct, line, fmt='pct', cls='pct') }}</td>
+          <td>{{ num_link(rwk, line) }}</td>
+          <td>{{ num_link(rwk_pct, line, fmt='pct', cls='pct') }}</td>
+          <td><span class="check-cell"><input type="checkbox" data-field="quality" data-line="{{ line }}"></span></td>
+          <td><span class="check-cell"><input type="checkbox" data-field="safety" data-line="{{ line }}"></span></td>
+        </tr>
+        {% endfor %}
+        {% set t_rej_pct = (tot.rej / tot.input * 100) if tot.input else 0 %}
+        {% set t_rwk_pct = (tot.rework / tot.input * 100) if tot.input else 0 %}
+        <tr class="total-row">
+          <td class="line-name">TOTAL</td>
+          <td>{{ tot.input|int if tot.input else '—' }}</td>
+          <td>{{ tot.actual|int if tot.actual else '—' }}</td>
+          <td>{{ tot.rej|int if tot.rej else '—' }}</td>
+          <td>{{ "%.1f%%"|format(t_rej_pct) if tot.input else '—' }}</td>
+          <td>{{ tot.rework|int if tot.rework else '—' }}</td>
+          <td>{{ "%.1f%%"|format(t_rwk_pct) if tot.input else '—' }}</td>
+          <td>—</td>
+          <td>—</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+<script>
+(function () {
+  const dateInput = document.getElementById("reviewDate");
+  const cutoffSel = document.getElementById("cutoffSel");
+
+  function reload() {
+    const d = dateInput.value;
+    const c = cutoffSel ? cutoffSel.value : "";
+    const params = new URLSearchParams();
+    if (d) params.set("date", d);
+    if (c) params.set("cutoff", c);
+    window.location.href = "/production/review?" + params.toString();
+  }
+  dateInput.addEventListener("change", reload);
+  if (cutoffSel) cutoffSel.addEventListener("change", reload);
+
+  // Quality / Safety checkboxes — local-only, persisted by date+cutoff.
+  const KEY = "prodReview:" + (dateInput.value || "today") + ":" + (cutoffSel ? cutoffSel.value : "");
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch (e) {}
+  document.querySelectorAll('input[type="checkbox"][data-field]').forEach(cb => {
+    const k = cb.dataset.line + "|" + cb.dataset.field;
+    cb.checked = !!saved[k];
+    cb.addEventListener("change", () => {
+      saved[k] = cb.checked;
+      try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch (e) {}
+    });
+  });
+})();
+</script>
+{% endblock %}

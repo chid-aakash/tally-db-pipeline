@@ -45,6 +45,13 @@
       <p class="muted" style="margin:4px 0 0">{{ company }} — reusable label / stage / group combos.</p>
     </div>
     <div style="display:flex; gap:10px; align-items:center;">
+      <form method="post" action="/production/process-catalog/sync-flags" style="margin:0;"
+            onsubmit="return confirm('Push catalog Role + Count-validation flags to every line row that matches by (section, label, stage)? Existing line-row sort order, group label and active state are preserved.');">
+        <input type="hidden" name="company" value="{{ company }}">
+        <button class="btn btn-secondary" type="submit" title="Apply role / validate_count from catalog → existing line rows">
+          ⇣ Sync flags to lines
+        </button>
+      </form>
       <form method="post" action="/production/process-catalog/seed" style="margin:0;">
         <input type="hidden" name="company" value="{{ company }}">
         <button class="btn btn-secondary" type="submit"
@@ -55,6 +62,11 @@
       <a class="btn btn-secondary" href="/production/processes?company={{ company }}">← Back</a>
     </div>
   </div>
+  {% if synced is not none %}
+  <div style="margin-top:10px; padding:8px 12px; background:#dcfce7; border:1px solid #86efac; color:#166534; border-radius:6px; font-size:.9rem;">
+    ✓ Synced flags to {{ synced }} line row{{ '' if synced == 1 else 's' }}.
+  </div>
+  {% endif %}
 </div>
 
 <div class="cat-section" id="sec-stages">
@@ -131,24 +143,74 @@
       <tr>
         <th>Label</th>
         <th>Stage</th>
+        {% if sec == 'production' %}<th>Role</th><th>Count Check</th>{% endif %}
         {% if sec == 'rejection' %}<th>Group</th>{% endif %}
         <th style="text-align:right; width:120px;">Actions</th>
       </tr>
     </thead>
     <tbody>
       {% for row in rows %}
-      <tr>
-        <td>{{ row.label }}</td>
-        <td><span class="cat-stage">{{ stage_labels.get(row.stage, row.stage) }}</span></td>
-        {% if sec == 'rejection' %}<td>{{ row.group_label or '' }}</td>{% endif %}
-        <td style="text-align:right;">
-          <form method="post" action="/production/process-catalog/{{ row.id }}/delete" style="display:inline;"
-                onsubmit="return confirm('Delete catalog entry &quot;{{ row.label }}&quot;? Lines that already use it are unaffected.');">
-            <input type="hidden" name="company" value="{{ company }}">
-            <button class="cat-mini-btn danger" type="submit">Delete</button>
-          </form>
-        </td>
-      </tr>
+        {% if edit_entry and edit_entry.id == row.id %}
+        <tr>
+          <td colspan="{% if sec == 'production' %}5{% elif sec == 'rejection' %}4{% else %}3{% endif %}" style="padding:0;">
+            <form method="post" action="/production/process-catalog/{{ row.id }}/edit"
+                  style="background:#fff7db; border-top:2px solid var(--orange-500); padding:12px 14px; display:flex; gap:10px; align-items:end; flex-wrap:wrap;">
+              <input type="hidden" name="company" value="{{ company }}">
+              <label>Label <input type="text" name="label" value="{{ row.label }}" required></label>
+              <label>Stage
+                <select name="stage" required>
+                  {% for sk, sl in stage_options %}
+                  <option value="{{ sk }}" {% if sk == row.stage %}selected{% endif %}>{{ sl }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              {% if sec == 'production' %}
+              <label>Role
+                <select name="role" required>
+                  <option value="output" {% if row.role != 'input' %}selected{% endif %}>Output</option>
+                  <option value="input" {% if row.role == 'input' %}selected{% endif %}>Input</option>
+                </select>
+              </label>
+              <label style="display:flex; align-items:center; gap:6px; font-size:.88rem;">
+                <input type="checkbox" name="validate_count" value="1" {% if row.validate_count %}checked{% endif %} style="width:auto;">
+                Enable count validation
+              </label>
+              {% endif %}
+              {% if sec == 'rejection' %}
+              <label>Group <input type="text" name="group_label" value="{{ row.group_label or '' }}"></label>
+              {% endif %}
+              <div style="display:flex; gap:6px;">
+                <button type="submit">Save</button>
+                <a class="cat-mini-btn" href="/production/process-catalog?company={{ company }}#sec-{{ sec }}">Cancel</a>
+              </div>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td>{{ row.label }}</td>
+          <td><span class="cat-stage">{{ stage_labels.get(row.stage, row.stage) }}</span></td>
+          {% if sec == 'production' %}
+          <td>
+            {% if row.role == 'input' %}<span style="display:inline-block; padding:2px 8px; border-radius:999px; background:#dbeafe; color:#1e3a8a; font-size:.76rem; font-weight:600;">Input</span>
+            {% else %}<span style="display:inline-block; padding:2px 8px; border-radius:999px; background:#dcfce7; color:#166534; font-size:.76rem; font-weight:600;">Output</span>{% endif %}
+          </td>
+          <td>
+            {% if row.validate_count %}<span style="color:#166534; font-weight:600;">✓ on</span>
+            {% else %}<span style="color:#9ca3af;">— off</span>{% endif %}
+          </td>
+          {% endif %}
+          {% if sec == 'rejection' %}<td>{{ row.group_label or '' }}</td>{% endif %}
+          <td style="text-align:right; white-space:nowrap;">
+            <a class="cat-mini-btn" href="/production/process-catalog?company={{ company }}&edit={{ row.id }}#sec-{{ sec }}">Edit</a>
+            <form method="post" action="/production/process-catalog/{{ row.id }}/delete" style="display:inline;"
+                  onsubmit="return confirm('Delete catalog entry &quot;{{ row.label }}&quot;? Lines that already use it are unaffected.');">
+              <input type="hidden" name="company" value="{{ company }}">
+              <button class="cat-mini-btn danger" type="submit">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% endif %}
       {% endfor %}
     </tbody>
   </table>
@@ -165,6 +227,18 @@
         {% for sk, sl in stage_options %}<option value="{{ sk }}">{{ sl }}</option>{% endfor %}
       </select>
     </label>
+    {% if sec == 'production' %}
+    <label>Role
+      <select name="role" required>
+        <option value="output" selected>Output</option>
+        <option value="input">Input</option>
+      </select>
+    </label>
+    <label style="display:flex; align-items:center; gap:6px; font-size:.88rem;">
+      <input type="checkbox" name="validate_count" value="1" checked style="width:auto;">
+      Enable count validation
+    </label>
+    {% endif %}
     {% if sec == 'rejection' %}
     <label>Group <input type="text" name="group_label" placeholder="e.g. Drilling"></label>
     {% else %}

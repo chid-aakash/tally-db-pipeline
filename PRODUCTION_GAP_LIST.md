@@ -6,6 +6,18 @@ This file is intentionally adversarial. Items stay here until the repo can eithe
 
 See also [LIVE_VALIDATION_NOTES.md](LIVE_VALIDATION_NOTES.md) for the running truth source from real Tally environments.
 
+## TODO — Authentication & authorization
+
+The webapp currently has **no authentication**. Every route — including destructive ones — is reachable by anyone who can hit the server. Before this is exposed beyond a trusted LAN, the following must be in place:
+
+- **Login + session management.** At minimum, password-protected login per user with secure session cookies (httpOnly, sameSite=strict, signed). Default-deny on every route.
+- **Role-based access control.** Distinct roles for: operator (per-hour entry only), supervisor (edit/submit DPRs, idle events), admin (process catalog, line config, stage definitions, sync flags, clear/seed).
+- **Protect destructive endpoints.** `/production/processes/.../clear`, `/production/process-catalog/sync-flags`, catalog/line edit + delete, DPR import (replaces all cells), CSV / Excel exports — all need admin-or-supervisor gating.
+- **Audit log.** Record who changed which DPR cells / process config rows / catalog entries, with timestamp. Currently the only history is `updated_at`.
+- **CSRF protection** on all POST forms (FastAPI does not provide this out of the box).
+- **Per-company tenancy.** Today every authenticated user could in principle see every company's data — needs a company scope on the user record and enforced on every query.
+- Decide hosting model (intranet-only vs internet-facing) before picking auth library — intranet may get away with reverse-proxy basic auth + IP allowlist; internet needs full session/JWT + rate limiting + HTTPS.
+
 ## Current findings from live testing
 
 - Tally can accept TCP connections and still return no visible companies.

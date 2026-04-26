@@ -21,6 +21,12 @@
     display: inline-block; padding: 2px 8px; border-radius: 999px;
     background: #eef2ff; color: var(--navy-800); font-size: .76rem; font-weight: 600;
   }
+  .pp-role {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    font-size: .76rem; font-weight: 600;
+  }
+  .pp-role.input { background:#dbeafe; color:#1e3a8a; }
+  .pp-role.output { background:#dcfce7; color:#166534; }
   .pp-actions { white-space: nowrap; text-align: right; }
   .pp-actions form { display: inline; }
   .pp-mini-btn {
@@ -114,6 +120,7 @@
         <th style="width:60px;"></th>
         <th>Label</th>
         <th>Stage</th>
+        {% if sec == 'production' %}<th>Role</th><th>Count Check</th>{% endif %}
         {% if sec == 'rejection' %}<th>Group</th>{% endif %}
         <th class="pp-actions">Actions</th>
       </tr>
@@ -122,12 +129,12 @@
       {% set ns = namespace(prev_group=None) %}
       {% for row in rows %}
         {% if sec == 'rejection' and row.group_label and row.group_label != ns.prev_group %}
-        <tr class="group-row"><td colspan="5">{{ row.group_label }}</td></tr>
+        <tr class="group-row"><td colspan="7">{{ row.group_label }}</td></tr>
         {% set ns.prev_group = row.group_label %}
         {% endif %}
         {% if edit_row and edit_row.id == row.id %}
         <tr>
-          <td colspan="5" style="padding:0;">
+          <td colspan="7" style="padding:0;">
             <form method="post" action="/production/processes/{{ line }}/{{ row.id }}/edit" class="pp-edit-form">
               <input type="hidden" name="company" value="{{ company }}">
               <label>Label <input type="text" name="label" value="{{ row.label }}" required></label>
@@ -138,6 +145,18 @@
                   {% endfor %}
                 </select>
               </label>
+              {% if sec == 'production' %}
+              <label>Role
+                <select name="role" required>
+                  <option value="output" {% if row.role != 'input' %}selected{% endif %}>Output</option>
+                  <option value="input" {% if row.role == 'input' %}selected{% endif %}>Input</option>
+                </select>
+              </label>
+              <label style="display:flex; align-items:center; gap:6px; font-size:.88rem;">
+                <input type="checkbox" name="validate_count" value="1" {% if row.validate_count %}checked{% endif %} style="width:auto;">
+                Enable count validation
+              </label>
+              {% endif %}
               {% if sec == 'rejection' %}
               <label>Group <input type="text" name="group_label" value="{{ row.group_label or '' }}" placeholder="e.g. Drilling"></label>
               {% else %}
@@ -167,6 +186,16 @@
           </td>
           <td>{{ row.label }}{% if not row.active %} <span class="muted" style="font-size:.78rem;">(inactive)</span>{% endif %}</td>
           <td><span class="pp-stage">{{ stage_labels.get(row.stage, row.stage) }}</span></td>
+          {% if sec == 'production' %}
+          <td>
+            {% if row.role == 'input' %}<span class="pp-role input">Input</span>
+            {% else %}<span class="pp-role output">Output</span>{% endif %}
+          </td>
+          <td>
+            {% if row.validate_count %}<span style="color:#166534; font-weight:600;">✓ on</span>
+            {% else %}<span class="muted">— off</span>{% endif %}
+          </td>
+          {% endif %}
           {% if sec == 'rejection' %}<td>{{ row.group_label or '' }}</td>{% endif %}
           <td class="pp-actions">
             <a class="pp-mini-btn" href="/production/processes/{{ line }}?company={{ company }}&{% if show_inactive %}show_inactive=1&{% endif %}edit={{ row.id }}#sec-{{ sec }}">Edit</a>

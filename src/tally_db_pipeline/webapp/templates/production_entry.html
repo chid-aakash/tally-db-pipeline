@@ -1,0 +1,639 @@
+{% extends "base.html" %}
+{% block title %}Hour Entry — {{ report.report_date|dmy }} {{ report.shift }} L{{ report.line }} · {{ selected_label }}{% endblock %}
+
+{% block content %}
+<style>
+  main { max-width: none !important; padding-left: 20px; padding-right: 20px; }
+  .entry-meta {
+    background: #fff; border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px 16px; margin-bottom: 14px; box-shadow: var(--shadow-sm);
+    display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px 14px; align-items: center;
+  }
+  .entry-meta .ml { color: var(--muted); font-size: .74rem; text-transform: uppercase; letter-spacing: .04em; }
+  .entry-meta .mv { font-weight: 700; color: var(--navy-900); font-size: 1rem; }
+
+  .hour-pick {
+    background: #fffbeb; border: 1px solid #fde68a; border-radius: 10px;
+    padding: 14px 16px; margin-bottom: 14px;
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  }
+  .hour-pick label { font-weight: 700; color: var(--navy-900); }
+  .hour-pick select { padding: 8px 10px; font-size: 1rem; border: 1px solid var(--line); border-radius: 6px; min-width: 220px; }
+
+  details.entry-sec {
+    border: 1px solid var(--line); border-radius: 10px; background: #fff;
+    margin-bottom: 12px; overflow: hidden;
+  }
+  details.entry-sec > summary {
+    padding: 12px 16px; cursor: pointer; font-weight: 700; color: var(--navy-900);
+    background: var(--navy-50); list-style: revert; user-select: none;
+  }
+  details.entry-sec[open] > summary { border-bottom: 1px solid var(--line); }
+  .sec-body { padding: 12px 14px; }
+
+  .etable { width: 100%; border-collapse: collapse; font-size: .9rem; }
+  .etable th, .etable td { padding: 6px 8px; border: 1px solid var(--line); }
+  .etable thead th { background: var(--navy-50); color: var(--navy-900); text-align: left; }
+  .etable tr.grp-head td { background: #f5f3ff; color: #4c1d95; font-weight: 700; }
+  .etable td.row-label { text-align: left; min-width: 240px; }
+  .etable td.val { width: 160px; text-align: center; }
+  .etable input[type="number"] {
+    width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px;
+    text-align: center; font-size: 1rem;
+  }
+  .etable input[type="number"]:focus { outline: none; border-color: var(--navy-700); background: #fffbeb; }
+
+  .role-tag { display:inline-block; font-size:.7rem; font-weight:600; padding:1px 6px; border-radius:10px; margin-left:6px; vertical-align:middle; }
+  .role-input { background:#dbeafe; color:#1e3a8a; }
+  .role-output { background:#dcfce7; color:#166534; }
+
+  details.stage-sec { border: 1px solid var(--line); border-radius: 8px; background:#fafafa; margin-bottom:10px; }
+  details.stage-sec > summary {
+    padding:10px 14px; cursor:pointer; display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+    list-style: revert; user-select: none;
+  }
+  details.stage-sec[open] > summary { border-bottom: 1px solid var(--line); }
+  details.stage-sec .st-name { font-weight:700; color:var(--navy-900); margin-right:auto; }
+  details.stage-sec .st-expected, details.stage-sec .st-filled { color: var(--muted); font-size:.85rem; }
+  details.stage-sec .st-expected b, details.stage-sec .st-filled b { color: var(--navy-900); }
+  details.stage-sec .st-delta {
+    font-weight:700; font-size:.85rem; padding:2px 10px; border-radius:12px;
+    background:#e5e7eb; color:#374151;
+  }
+  details.stage-sec .st-delta.ok { background:#dcfce7; color:#166534; }
+  details.stage-sec .st-delta.short { background:#fef3c7; color:#92400e; }
+  details.stage-sec .st-delta.over { background:#fee2e2; color:#991b1b; }
+  details.stage-sec .stage-body { padding: 10px 14px; }
+
+  .prod-warn { background:#fee2e2 !important; }
+
+  .idle-table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+  .idle-table th, .idle-table td { padding: 6px 8px; border: 1px solid var(--line); }
+  .idle-table th { background: var(--navy-50); color: var(--navy-900); }
+  .idle-table input { width: 100%; padding: 4px 6px; border: 1px solid transparent; font-size: .88rem; background: transparent; }
+  .idle-table input:focus { outline: none; border-color: var(--navy-700); background: #fffbeb; }
+  .idle-del { background: transparent; color: #b91c1c; border: 0; cursor: pointer; font-size: 1.2rem; padding: 0; }
+
+  .actions {
+    display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap;
+    margin-top: 14px; padding: 10px 14px; background: #fff;
+    border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 -4px 12px rgba(0,0,0,0.04);
+  }
+  .ghost { background: var(--surface-2); color: var(--navy-900); border: 1px solid var(--line); padding: 8px 14px; border-radius: 8px; text-decoration: none; }
+</style>
+
+{% if config_empty %}
+<div class="card" style="background:#fff7db; border-color:var(--orange-500);">
+  <strong>No process rows configured for Line {{ report.line }}.</strong>
+</div>
+{% endif %}
+
+<div class="entry-meta">
+  <div><div class="ml">Date</div><div class="mv">{{ report.report_date|dmy }}</div></div>
+  <div><div class="ml">Shift</div><div class="mv">{{ report.shift }}</div></div>
+  <div><div class="ml">Line</div><div class="mv">{{ report.line }}</div></div>
+  <div><div class="ml">Model</div><div class="mv">{{ report.model or '—' }}</div></div>
+  <div><div class="ml">Company</div><div class="mv" style="font-size:.86rem;">{{ report.company_name }}</div></div>
+</div>
+
+<div class="hour-pick">
+  <label for="hour-select">Hour slot:</label>
+  <select id="hour-select" onchange="window.location.href='/production/daily-report/{{ report.id }}/entry?hour=' + encodeURIComponent(this.value)">
+    {% for key, label in hour_slots %}
+      <option value="{{ key }}" {% if key == selected_hour %}selected{% endif %}>{{ label }}</option>
+    {% endfor %}
+  </select>
+  <span class="muted" style="margin-left:auto; font-size:.85rem;">Editing values for <strong>{{ selected_label }}</strong> only — other hours are not affected.</span>
+</div>
+
+<form method="post" action="/production/daily-report/{{ report.id }}/entry/save" id="entry-form">
+  <input type="hidden" name="hour" value="{{ selected_hour }}">
+
+  <div style="background:#fff; border:1px solid var(--line); border-radius:8px; padding:10px 14px; margin-bottom:12px; display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
+    <label style="display:flex; flex-direction:column; gap:4px; min-width:200px;">
+      <span class="muted" style="font-size:.74rem; text-transform:uppercase; letter-spacing:.04em;">Customer</span>
+      <select id="hm-customer" style="font-weight:600; padding:6px 8px; border:1px solid var(--line); border-radius:6px;">
+        <option value="">— select customer —</option>
+        {% for cust in models_by_customer.keys()|sort %}
+          <option value="{{ cust }}" {% if cust == selected_customer %}selected{% endif %}>{{ cust }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label style="display:flex; flex-direction:column; gap:4px; min-width:240px;">
+      <span class="muted" style="font-size:.74rem; text-transform:uppercase; letter-spacing:.04em;">Model running this hour</span>
+      <select id="hm-model" name="hour_model" style="font-weight:600; padding:6px 8px; border:1px solid var(--line); border-radius:6px;">
+        <option value="">— use report default ({{ report.model or '—' }}) —</option>
+      </select>
+    </label>
+    <span class="muted" style="font-size:.82rem;">
+      Pick the Customer first, then the Model. Leave blank to use the report's primary model
+      (<strong>{{ report.model or '—' }}</strong>). Models come from the Model Specs page.
+    </span>
+  </div>
+  <script>
+    (function () {
+      var MODELS_BY_CUSTOMER = {{ models_by_customer | tojson }};
+      var SELECTED_MODEL = {{ (selected_model or '') | tojson }};
+      var custSel = document.getElementById("hm-customer");
+      var modelSel = document.getElementById("hm-model");
+      function repopulate() {
+        var cust = custSel.value;
+        var current = modelSel.value || SELECTED_MODEL || "";
+        // Drop existing model options except the placeholder
+        while (modelSel.options.length > 1) modelSel.remove(1);
+        var list = (MODELS_BY_CUSTOMER[cust] || []);
+        list.forEach(function (m) {
+          var o = document.createElement("option");
+          o.value = m; o.textContent = m;
+          if (m === current) o.selected = true;
+          modelSel.appendChild(o);
+        });
+      }
+      custSel.addEventListener("change", repopulate);
+      repopulate();
+      // Preselect the saved model on load.
+      if (SELECTED_MODEL) modelSel.value = SELECTED_MODEL;
+    })();
+  </script>
+
+  {% macro entry_rows(section, rows) %}
+    {% for r in rows %}
+      <tr>
+        <td class="row-label">
+          {{ r.label }}
+          {% if section == "production" %}
+            {% if "input" in r.label.lower() %}<span class="role-tag role-input">input</span>{% else %}<span class="role-tag role-output">output</span>{% endif %}
+          {% endif %}
+        </td>
+        <td class="val">
+          <input type="number" step="any" min="0"
+                 {% if section == "production" %}
+                   data-stage="{{ r.stage }}"
+                   data-role="{{ 'input' if 'input' in r.label.lower() else 'output' }}"
+                   class="prod-input"
+                 {% endif %}
+                 name="cell__{{ section }}__{{ r.key }}"
+                 value="{{ ('%.0f' % cells[section][r.key][selected_hour]) if cells[section][r.key][selected_hour] else '' }}">
+        </td>
+      </tr>
+    {% endfor %}
+  {% endmacro %}
+
+  {% set _model_for_hour = selected_model or report.model or '—' %}
+  {% set model_badge %}
+    <span style="margin-left:auto; display:inline-flex; align-items:center; gap:6px; font-size:.78rem; font-weight:600; color:var(--navy-900); background:#fff; border:1px solid var(--line); padding:3px 10px; border-radius:999px;">
+      <span class="muted" style="font-weight:500; text-transform:uppercase; letter-spacing:.04em; font-size:.68rem;">Model</span>
+      {{ _model_for_hour }}
+    </span>
+  {% endset %}
+
+  <details class="entry-sec" open>
+    <summary style="display:flex; align-items:center; gap:14px;"><span>1 · Production — output for {{ selected_label }}</span>{{ model_badge }}</summary>
+    <div class="sec-body">
+      <table class="etable">
+        <thead><tr><th>Description</th><th style="text-align:center;">Value</th></tr></thead>
+        <tbody>{{ entry_rows("production", production_rows) }}</tbody>
+      </table>
+    </div>
+  </details>
+
+  {% macro picker_row(section, r) %}
+    <tr data-row-key="{{ r.key }}">
+      <td class="row-label">{{ r.label }}</td>
+      <td class="val">
+        <input type="number" step="any" min="0" autofocus
+               name="cell__{{ section }}__{{ r.key }}"
+               value="{{ ('%.0f' % cells[section][r.key][selected_hour]) if cells[section][r.key][selected_hour] else '' }}">
+      </td>
+      <td style="width:36px; text-align:center;">
+        <button type="button" class="row-del" title="Remove from this entry"
+                style="background:transparent; color:#b91c1c; border:0; cursor:pointer; font-size:1.1rem; padding:0;">×</button>
+      </td>
+    </tr>
+  {% endmacro %}
+
+  <details class="entry-sec" open id="rejection-section">
+    <summary style="display:flex; align-items:center; gap:14px;"><span>2 · Rejection — allocate per stage for {{ selected_label }}</span>{{ model_badge }}</summary>
+    <div class="sec-body">
+      <p class="muted" style="margin:0 0 10px; font-size:.85rem;">
+        Each stage's expected rejection = (input − output). Allocate that quantity across the stage's defect categories below.
+      </p>
+      {% for stage in stage_chain %}
+        {% if stage.rejection_rows %}
+          <details class="stage-sec" data-stage="{{ stage.key }}" data-validate="{{ '1' if stage.validate_count else '0' }}" open>
+            <summary>
+              <span class="st-name">{{ stage.label }}{% if not stage.validate_count %} <span class="muted" style="font-weight:400; font-size:.78rem;">(no count check)</span>{% endif %}</span>
+              {% if stage.validate_count %}
+                <span class="st-expected">expected: <b data-stage-expected>0</b></span>
+                <span class="st-filled">filled: <b data-stage-filled>0</b></span>
+                <span class="st-delta" data-stage-delta>—</span>
+              {% else %}
+                <span class="st-filled">filled: <b data-stage-filled>0</b></span>
+              {% endif %}
+            </summary>
+            <div class="stage-body">
+              <table class="etable">
+                <thead><tr><th>Description</th><th style="text-align:center;">Value</th><th></th></tr></thead>
+                <tbody class="stage-rows" data-stage-tbody="{{ stage.key }}">
+                  {% for r in stage.rejection_rows %}
+                    {% if r.key in prefilled_keys["rejection"] %}
+                      <tr data-row-key="{{ r.key }}">
+                        <td class="row-label">{{ r.label }}</td>
+                        <td class="val">
+                          <input type="number" step="any" min="0" class="rej-input"
+                                 data-stage="{{ stage.key }}"
+                                 name="cell__rejection__{{ r.key }}"
+                                 value="{{ ('%.0f' % cells['rejection'][r.key][selected_hour]) if cells['rejection'][r.key][selected_hour] else '' }}">
+                        </td>
+                        <td style="width:36px; text-align:center;">
+                          <button type="button" class="row-del" title="Remove" style="background:transparent; color:#b91c1c; border:0; cursor:pointer; font-size:1.1rem; padding:0;">×</button>
+                        </td>
+                      </tr>
+                    {% endif %}
+                  {% endfor %}
+                </tbody>
+              </table>
+              <div style="margin-top:8px;">
+                <select class="stage-picker" data-stage="{{ stage.key }}" style="padding:6px 8px; border:1px solid var(--line); border-radius:6px; min-width:280px;">
+                  <option value="">— pick a defect to add —</option>
+                  {% for r in stage.rejection_rows %}
+                    <option value="{{ r.key }}" data-label="{{ r.label }}">{{ r.label }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+            </div>
+          </details>
+        {% endif %}
+      {% endfor %}
+    </div>
+  </details>
+
+  <details class="entry-sec">
+    <summary style="display:flex; align-items:center; gap:14px;"><span>3 · Rework — rework counts for {{ selected_label }}</span>{{ model_badge }}</summary>
+    <div class="sec-body">
+      <table class="etable" id="rework-table">
+        <thead><tr><th>Description</th><th style="text-align:center;">Value</th><th></th></tr></thead>
+        <tbody id="rework-rows">
+          {% for r in rework_rows %}
+            {% if r.key in prefilled_keys["rework"] %}{{ picker_row("rework", r) }}{% endif %}
+          {% endfor %}
+        </tbody>
+      </table>
+      <div style="margin-top:10px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <select id="rework-picker" style="padding:6px 8px; border:1px solid var(--line); border-radius:6px; min-width:280px;">
+          <option value="">— pick a rework row to add —</option>
+          {% for r in rework_rows %}
+            <option value="{{ r.key }}" data-label="{{ r.label }}">{{ r.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+  </details>
+
+  <details class="entry-sec">
+    <summary>4 · Idle time — add new event(s)</summary>
+    <div class="sec-body">
+      <p class="muted" style="margin:0 0 10px; font-size:.85rem;">
+        Idle events are generic — add one or more here. Existing entries are preserved (manage/delete from the summary page).
+      </p>
+      <table class="idle-table" id="idle-table">
+        <thead>
+          <tr>
+            <th style="width:120px">Machine</th>
+            <th>Description</th>
+            <th style="width:90px">From</th>
+            <th style="width:90px">To</th>
+            <th style="width:100px">Time Loss (min)</th>
+            <th style="width:120px">Attended By</th>
+            <th>Remarks</th>
+            <th style="width:40px"></th>
+          </tr>
+        </thead>
+        <tbody id="idle-rows"></tbody>
+      </table>
+      <button type="button" id="add-idle" style="margin-top:10px; background:var(--surface-2); color:var(--navy-900); border:1px solid var(--line); padding:8px 14px;">+ Add idle event</button>
+    </div>
+  </details>
+
+  <div class="actions">
+    <a href="/production/daily-report/{{ report.id }}/edit" class="ghost">← Back to summary</a>
+    <button type="submit">Save {{ selected_label }} entry</button>
+  </div>
+</form>
+
+<script>
+(function () {
+  // ---- Idle event rows ----
+  var rows = document.getElementById("idle-rows");
+  var counter = 0;
+  document.getElementById("add-idle").addEventListener("click", function () {
+    var idx = counter++;
+    var tr = document.createElement("tr");
+    tr.innerHTML = [
+      "machine", "description", "from", "to", "time_loss", "attended_by", "remarks"
+    ].map(function (f) {
+      var type = (f === "time_loss") ? "number" : "text";
+      var ph = (f === "from" || f === "to") ? ' placeholder="HH:MM"' : "";
+      return '<td><input type="' + type + '" name="idle_new__' + idx + '__' + f + '"' + ph + '></td>';
+    }).join("") + '<td><button type="button" class="idle-del" title="Remove">×</button></td>';
+    rows.appendChild(tr);
+  });
+  rows.addEventListener("click", function (e) {
+    if (e.target && e.target.classList.contains("idle-del")) {
+      var tr = e.target.closest("tr");
+      if (tr) tr.parentNode.removeChild(tr);
+    }
+  });
+
+  // ---- Picker-driven rows for Rejection / Rework ----
+  function setupPicker(opts) {
+    var tbody = document.getElementById(opts.tbodyId);
+    var picker = document.getElementById(opts.pickerId);
+    var addBtn = document.getElementById(opts.addBtnId);
+    var section = opts.section;
+    var grouped = opts.grouped;
+
+    function disableUsed() {
+      var used = {};
+      tbody.querySelectorAll("tr[data-row-key]").forEach(function (tr) { used[tr.dataset.rowKey] = 1; });
+      picker.querySelectorAll("option[value]").forEach(function (opt) {
+        if (!opt.value) return;
+        opt.disabled = !!used[opt.value];
+      });
+    }
+
+    function ensureGroupHeader(groupName) {
+      if (!grouped) return null;
+      var existing = tbody.querySelector('tr.grp-head[data-group="' + cssEscape(groupName) + '"]');
+      if (existing) return existing;
+      var tr = document.createElement("tr");
+      tr.className = "grp-head";
+      tr.dataset.group = groupName;
+      tr.innerHTML = '<td colspan="3">' + escapeHtml(groupName) + '</td>';
+      tbody.appendChild(tr);
+      return tr;
+    }
+
+    function addRow(key, label, groupName) {
+      var tr = document.createElement("tr");
+      tr.dataset.rowKey = key;
+      tr.innerHTML =
+        '<td class="row-label">' + escapeHtml(label) + '</td>' +
+        '<td class="val"><input type="number" step="any" min="0" name="cell__' + section + '__' + key + '" autofocus></td>' +
+        '<td style="width:36px; text-align:center;"><button type="button" class="row-del" title="Remove from this entry" style="background:transparent; color:#b91c1c; border:0; cursor:pointer; font-size:1.1rem; padding:0;">×</button></td>';
+      if (grouped) {
+        ensureGroupHeader(groupName);
+        // Append after the group's last existing row (or after the header)
+        var lastInGroup = null;
+        var inGroup = false;
+        Array.prototype.forEach.call(tbody.querySelectorAll("tr"), function (r) {
+          if (r.classList.contains("grp-head")) {
+            inGroup = (r.dataset.group === groupName);
+            if (inGroup) lastInGroup = r;
+          } else if (inGroup) {
+            lastInGroup = r;
+          }
+        });
+        if (lastInGroup && lastInGroup.nextSibling) {
+          tbody.insertBefore(tr, lastInGroup.nextSibling);
+        } else {
+          tbody.appendChild(tr);
+        }
+      } else {
+        tbody.appendChild(tr);
+      }
+      var inp = tr.querySelector("input");
+      if (inp) inp.focus();
+    }
+
+    picker.addEventListener("change", function () {
+      var opt = picker.options[picker.selectedIndex];
+      if (!opt || !opt.value) return;
+      addRow(opt.value, opt.dataset.label, opt.dataset.group || "");
+      picker.value = "";
+      disableUsed();
+    });
+
+    tbody.addEventListener("click", function (e) {
+      if (e.target && e.target.classList.contains("row-del")) {
+        var tr = e.target.closest("tr[data-row-key]");
+        if (!tr) return;
+        var groupName = null;
+        // If grouped and this is the last row in its group, also remove the header
+        if (grouped) {
+          var prev = tr.previousElementSibling;
+          while (prev && !prev.classList.contains("grp-head")) prev = prev.previousElementSibling;
+          if (prev) groupName = prev.dataset.group;
+        }
+        tr.parentNode.removeChild(tr);
+        if (groupName) {
+          var stillHas = tbody.querySelector('tr[data-row-key]'); // any row at all
+          // Check if this group still has any data rows
+          var header = tbody.querySelector('tr.grp-head[data-group="' + cssEscape(groupName) + '"]');
+          if (header) {
+            var sib = header.nextElementSibling;
+            var groupHasRows = false;
+            while (sib && !sib.classList.contains("grp-head")) {
+              if (sib.dataset.rowKey) { groupHasRows = true; break; }
+              sib = sib.nextElementSibling;
+            }
+            if (!groupHasRows) header.parentNode.removeChild(header);
+          }
+        }
+        disableUsed();
+      }
+    });
+
+    disableUsed();
+  }
+
+  function escapeHtml(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];
+    });
+  }
+  function cssEscape(s) { return String(s).replace(/"/g, '\\"'); }
+
+  // ---- Per-stage rejection pickers ----
+  // Each stage's picker auto-adds the chosen row into its own tbody.
+  document.querySelectorAll("select.stage-picker").forEach(function (picker) {
+    var stage = picker.dataset.stage;
+    var tbody = document.querySelector('tbody[data-stage-tbody="' + stage + '"]');
+    if (!tbody) return;
+
+    function disableUsed() {
+      var used = {};
+      tbody.querySelectorAll("tr[data-row-key]").forEach(function (tr) { used[tr.dataset.rowKey] = 1; });
+      picker.querySelectorAll("option[value]").forEach(function (opt) {
+        if (!opt.value) return;
+        opt.disabled = !!used[opt.value];
+      });
+    }
+
+    picker.addEventListener("change", function () {
+      var opt = picker.options[picker.selectedIndex];
+      if (!opt || !opt.value) return;
+      var key = opt.value, label = opt.dataset.label;
+      var tr = document.createElement("tr");
+      tr.dataset.rowKey = key;
+      tr.innerHTML =
+        '<td class="row-label">' + escapeHtml(label) + '</td>' +
+        '<td class="val"><input type="number" step="any" min="0" class="rej-input" data-stage="' + stage + '" name="cell__rejection__' + key + '" autofocus></td>' +
+        '<td style="width:36px; text-align:center;"><button type="button" class="row-del" title="Remove" style="background:transparent; color:#b91c1c; border:0; cursor:pointer; font-size:1.1rem; padding:0;">×</button></td>';
+      tbody.appendChild(tr);
+      var inp = tr.querySelector("input");
+      if (inp) inp.focus();
+      picker.value = "";
+      disableUsed();
+      recomputeStages();
+    });
+
+    tbody.addEventListener("click", function (e) {
+      if (e.target && e.target.classList.contains("row-del")) {
+        var tr = e.target.closest("tr[data-row-key]");
+        if (tr) tr.parentNode.removeChild(tr);
+        disableUsed();
+        recomputeStages();
+      }
+    });
+
+    disableUsed();
+  });
+
+  setupPicker({
+    section: "rework", tbodyId: "rework-rows",
+    pickerId: "rework-picker",
+    grouped: false,
+  });
+
+  // ---- Stage chain: live expected/filled ----
+  var STAGE_CHAIN = {{ stage_chain | tojson }};
+  function num(v) { v = parseFloat(v); return isNaN(v) ? 0 : v; }
+  function getProdValue(rowKey) {
+    if (!rowKey) return 0;
+    var inp = document.querySelector('input[name="cell__production__' + rowKey + '"]');
+    return inp ? num(inp.value) : 0;
+  }
+  function getStageRejectionFilled(stageKey) {
+    var sum = 0;
+    document.querySelectorAll('input.rej-input[data-stage="' + stageKey + '"]').forEach(function (i) {
+      sum += num(i.value);
+    });
+    return sum;
+  }
+  function recomputeStages() {
+    STAGE_CHAIN.forEach(function (s) {
+      var sec = document.querySelector('details.stage-sec[data-stage="' + s.key + '"]');
+      if (!sec) return;
+      var inputVal = getProdValue(s.effective_input_row_key);
+      var outputVal = getProdValue(s.output_row_key);
+      var filled = getStageRejectionFilled(s.key);
+      var filledEl = sec.querySelector("[data-stage-filled]");
+      if (filledEl) filledEl.textContent = filled.toFixed(0);
+
+      if (s.validate_count) {
+        var expected = inputVal - outputVal;
+        var expEl = sec.querySelector("[data-stage-expected]");
+        if (expEl) expEl.textContent = expected.toFixed(0);
+        var deltaEl = sec.querySelector("[data-stage-delta]");
+        var diff = expected - filled;
+        deltaEl.classList.remove("ok", "short", "over");
+        if (expected <= 0 && filled === 0) {
+          deltaEl.textContent = "—";
+        } else if (Math.abs(diff) < 0.001) {
+          deltaEl.textContent = "✓ matched";
+          deltaEl.classList.add("ok");
+        } else if (diff > 0) {
+          deltaEl.textContent = diff.toFixed(0) + " to allocate";
+          deltaEl.classList.add("short");
+        } else {
+          deltaEl.textContent = (-diff).toFixed(0) + " over expected";
+          deltaEl.classList.add("over");
+        }
+      }
+
+      // Output > Input warning on production input field (still applies even
+      // if count validation is off, but only as a soft visual hint)
+      var outInp = s.output_row_key ? document.querySelector('input[name="cell__production__' + s.output_row_key + '"]') : null;
+      if (outInp) {
+        outInp.classList.toggle("prod-warn", inputVal > 0 && outputVal > inputVal);
+        outInp.title = (inputVal > 0 && outputVal > inputVal)
+          ? "Output exceeds " + s.label + " input (" + inputVal + ")"
+          : "";
+      }
+    });
+  }
+
+  // ---- Submit guard: block save while any validated stage has a non-zero delta ----
+  document.getElementById("entry-form").addEventListener("submit", function (e) {
+    var pending = [];
+    STAGE_CHAIN.forEach(function (s) {
+      if (!s.validate_count) return;
+      var inputVal = getProdValue(s.effective_input_row_key);
+      var outputVal = getProdValue(s.output_row_key);
+      var expected = inputVal - outputVal;
+      var filled = getStageRejectionFilled(s.key);
+      // Only flag stages that actually have data entered (input>0 or output>0
+      // or some rejection filled). An entirely empty stage isn't pending.
+      if (inputVal === 0 && outputVal === 0 && filled === 0) return;
+      var diff = expected - filled;
+      if (Math.abs(diff) >= 0.001) {
+        pending.push({ stage: s.label, diff: diff });
+      }
+    });
+    if (pending.length === 0) return;
+    e.preventDefault();
+    var lines = pending.map(function (p) {
+      if (p.diff > 0) return "• " + p.stage + ": " + p.diff.toFixed(0) + " still to allocate";
+      return "• " + p.stage + ": " + (-p.diff).toFixed(0) + " over expected";
+    });
+    alert("Please finish the rejection allocation before saving:\n\n" + lines.join("\n"));
+    // Open the rejection section + each pending stage so the user lands on it
+    document.getElementById("rejection-section").open = true;
+    pending.forEach(function (p) {
+      STAGE_CHAIN.forEach(function (s) {
+        if (s.label === p.stage) {
+          var sec = document.querySelector('details.stage-sec[data-stage="' + s.key + '"]');
+          if (sec) sec.open = true;
+        }
+      });
+    });
+  });
+  document.addEventListener("input", function (e) {
+    if (!e.target) return;
+    if (e.target.classList && (e.target.classList.contains("prod-input") || e.target.classList.contains("rej-input"))) {
+      recomputeStages();
+    }
+  });
+  recomputeStages();
+
+  // ---- Auto-compute time loss (minutes) from From/To on idle rows ----
+  function parseHM(s) {
+    if (!s) return null;
+    var m = String(s).trim().match(/^(\d{1,2}):(\d{2})$/);
+    if (!m) return null;
+    var h = parseInt(m[1], 10), mm = parseInt(m[2], 10);
+    if (isNaN(h) || isNaN(mm) || h < 0 || h > 23 || mm < 0 || mm > 59) return null;
+    return h * 60 + mm;
+  }
+  document.getElementById("idle-table").addEventListener("input", function (e) {
+    var t = e.target;
+    if (!t || (t.name || "").indexOf("idle_new__") !== 0) return;
+    var parts = t.name.split("__");
+    var field = parts[parts.length - 1];
+    if (field !== "from" && field !== "to") return;
+    var tr = t.closest("tr");
+    if (!tr) return;
+    var fromInp = tr.querySelector('input[name$="__from"]');
+    var toInp = tr.querySelector('input[name$="__to"]');
+    var lossInp = tr.querySelector('input[name$="__time_loss"]');
+    if (!fromInp || !toInp || !lossInp) return;
+    var a = parseHM(fromInp.value), b = parseHM(toInp.value);
+    if (a == null || b == null) return;
+    var diff = b - a;
+    if (diff < 0) diff += 24 * 60; // wrap past midnight
+    lossInp.value = diff;
+  });
+})();
+</script>
+{% endblock %}

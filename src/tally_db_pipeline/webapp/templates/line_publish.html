@@ -1,0 +1,302 @@
+{% extends "base.html" %}
+{% block title %}SJ - LINE — {{ report_date }}{% endblock %}
+
+{% block content %}
+<style>
+  main { max-width: 1280px; }
+  .lp-header { background: #1e3a8a; color: #fff; padding: 10px 16px; border-radius: 6px 6px 0 0; display:flex; justify-content:space-between; align-items:center; }
+  .lp-header .vt { background: #fde68a; color: #1e3a8a; padding: 2px 10px; font-weight: 700; border-radius: 4px; }
+  .lp-meta { display:flex; justify-content:space-between; padding: 8px 16px; background: #f3f4f6; border-bottom: 1px solid var(--line); }
+  .lp-grid { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--line); border-top: none; }
+  .lp-col { padding: 12px 16px; }
+  .lp-col + .lp-col { border-left: 1px solid var(--line); }
+  .lp-col h3 { margin: 0 0 6px; font-size: .95rem; color: #1e3a8a; text-align: center; }
+  .lp-tbl { width: 100%; border-collapse: collapse; font-size: .85rem; }
+  .lp-tbl th { text-align: left; font-weight: 600; color: var(--ink-soft); border-bottom: 1px solid var(--line); padding: 4px 6px; }
+  .lp-tbl td { padding: 4px 6px; border-bottom: 1px dashed #e5e7eb; }
+  .lp-tbl tr:last-child td { border-bottom: none; }
+  .lp-tbl .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .lp-tbl .item { font-weight: 600; }
+  .lp-tbl .godown { color: var(--ink-soft); font-size: .8rem; }
+  .lp-confirm { background: #fffbeb; border: 1px solid #fcd34d; padding: 14px 16px; border-radius: 8px; margin-top: 16px; }
+  .lp-confirm input[type=number] { padding: 6px 10px; font-size: 1rem; width: 120px; }
+  .lp-confirm button { background: #16a34a; color: #fff; padding: 8px 18px; font-size: .95rem; border: none; border-radius: 6px; cursor: pointer; }
+  .lp-confirm button:hover { background: #15803d; }
+  .lp-warn { background: #fef2f2; border: 1px solid #fca5a5; padding: 10px 14px; border-radius: 6px; color: #991b1b; margin-top: 10px; }
+  .lp-status { padding: 10px 14px; border-radius: 6px; margin-top: 12px; }
+  .lp-status.posted { background: #ecfdf5; border: 1px solid #6ee7b7; color: #065f46; }
+  .lp-status.failed { background: #fef2f2; border: 1px solid #fca5a5; color: #991b1b; }
+  .lp-empty { padding: 24px; text-align: center; color: var(--ink-soft); }
+</style>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <div>
+      <h1 style="margin:0">Post SJ - LINE to Tally</h1>
+      <p class="muted" style="margin:4px 0 0;">{{ company }} — {{ report_date }} — consolidated voucher across all shifts and lines for the day.</p>
+    </div>
+    <a class="btn btn-secondary" href="/production/daily-report?company={{ company }}&date={{ report_date }}">← Back to reports</a>
+  </div>
+</div>
+
+{% if request.query_params.get('msg') %}
+  <div class="lp-warn" style="background:#fee2e2; border-color:#fca5a5; color:#991b1b;">
+    ⛔ {{ request.query_params.get('msg') }}
+  </div>
+{% endif %}
+{% if latest %}
+  <div class="lp-status {{ 'posted' if latest.status == 'posted' else ('failed' if latest.status == 'failed' else '') }}">
+    {% if latest.status == 'posted' %}
+      ✅ Posted to Tally on {{ latest.posted_at.strftime('%Y-%m-%d %H:%M') if latest.posted_at else '—' }} — voucher #{{ latest.tally_voucher_number or latest.tally_master_id }}.
+    {% elif latest.status == 'failed' %}
+      ❌ Last attempt failed: {{ latest.tally_error }}
+    {% else %}
+      ⏳ Last attempt status: {{ latest.status }}
+    {% endif %}
+  </div>
+{% endif %}
+
+{% if not consume and not produce %}
+  <div class="lp-empty card">No production data found for this date. Did the DPRs get saved?</div>
+{% else %}
+
+  <div style="margin-top:14px;">
+    <div class="lp-header">
+      <div><span class="vt">SJ - LINE</span> &nbsp;<strong>No.</strong> <span style="color:#fde68a;">(auto)</span></div>
+      <div>{{ report_date }}</div>
+    </div>
+    <div class="lp-meta">
+      <span><strong>Transfer of Materials</strong></span>
+      <span>{{ result.per_model|length }} model(s) running</span>
+    </div>
+    <div class="lp-grid">
+      {% set consume_total = consume | map(attribute='amount') | select | sum %}
+      {% set produce_total = produce | map(attribute='amount') | select | sum %}
+      <div class="lp-col">
+        <h3>Source (Consumption)</h3>
+        <table class="lp-tbl">
+          <thead>
+            <tr>
+              <th>Name of Item</th><th>Godown</th>
+              <th class="num">Quantity</th>
+              <th class="num">Rate</th>
+              <th class="num">Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for e in consume %}
+            <tr>
+              <td class="item">{{ e.item_name }}</td>
+              <td class="godown">{{ e.godown }}</td>
+              <td class="num">{{ '%g' % e.quantity }} {{ e.uom }}</td>
+              <td class="num">{% if e.rate %}{{ '%.2f' % e.rate }}/{{ e.uom }}{% else %}—{% endif %}</td>
+              <td class="num">{% if e.amount %}₹ {{ '%.2f' % e.amount }}{% else %}—{% endif %}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+          <tfoot>
+            <tr style="font-weight:700; background:#f9fafb;">
+              <td colspan="4" style="text-align:right;">Total</td>
+              <td class="num">{% if consume_total %}₹ {{ '%.2f' % consume_total }}{% else %}—{% endif %}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      <div class="lp-col">
+        <h3>Destination (Production)</h3>
+        <table class="lp-tbl">
+          <thead>
+            <tr>
+              <th>Name of Item</th><th>Godown</th>
+              <th class="num">Quantity</th>
+              <th class="num">Rate</th>
+              <th class="num">Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for e in produce %}
+            <tr>
+              <td class="item">{{ e.item_name }}</td>
+              <td class="godown">{{ e.godown }}</td>
+              <td class="num">{{ '%g' % e.quantity }} {{ e.uom }}</td>
+              <td class="num">{% if e.rate %}{{ '%.2f' % e.rate }}/{{ e.uom }}{% else %}—{% endif %}</td>
+              <td class="num">{% if e.amount %}₹ {{ '%.2f' % e.amount }}{% else %}—{% endif %}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+          <tfoot>
+            <tr style="font-weight:700; background:#f9fafb;">
+              <td colspan="4" style="text-align:right;">Total</td>
+              <td class="num">{% if produce_total %}₹ {{ '%.2f' % produce_total }}{% else %}—{% endif %}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div style="margin-top: 18px;">
+    <h3 style="margin-bottom:6px;">Per-model summary</h3>
+    <table class="lp-tbl" style="background:#fff; border:1px solid var(--line);">
+      <thead>
+        <tr>
+          <th>Model</th>
+          <th class="num">Input</th>
+          <th class="num">Total Rejection</th>
+          <th class="num">Drilled (Input − Rej)</th>
+          <th>Spec on file?</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for m in result.per_model %}
+        <tr>
+          <td class="item">{{ m.model }}</td>
+          <td class="num">{{ '%g' % m.input_qty }}</td>
+          <td class="num">{{ '%g' % m.rejection_qty }}</td>
+          <td class="num">{{ '%g' % m.drilled_qty }}</td>
+          <td>{% if m.model in result.missing_specs %}<span style="color:#b91c1c;">⚠ missing</span>{% else %}✓{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div style="margin-top: 18px;">
+    <h3 style="margin-bottom:6px;">Narration that will be posted</h3>
+    <pre style="background:#f9fafb; border:1px solid var(--line); border-radius:8px; padding:12px; font-size:.82rem; white-space:pre-wrap; line-height:1.45;">{{ result.voucher.narration }}</pre>
+  </div>
+
+  {% if result.missing_specs %}
+    <div class="lp-warn">
+      ⚠ The following models have no spec on file, so their rejection contributes <strong>nothing</strong> to plain glass scrap and their drilled output contributes <strong>nothing</strong> to circle cullet scrap: <strong>{{ result.missing_specs|join(', ') }}</strong>.
+      <a href="/production/models?company={{ company }}">Add specs →</a>
+    </div>
+  {% endif %}
+
+  {% if result.skipped_missing_stock %}
+    <div class="lp-warn" style="background:#fee2e2; border-color:#fca5a5; color:#991b1b;">
+      ⛔ Skipped <strong>{{ result.skipped_missing_stock|length }}</strong> model(s) — Tally is missing the stock items needed for the voucher:
+      <ul style="margin:6px 0 0 18px;">
+        {% for e in result.skipped_missing_stock %}
+          <li><strong>{{ e.model }}</strong> —
+            {% if e.missing == 'both' %}neither <code>BLANK GLASS - {{ e.model }}</code> nor <code>DRILLED GLASS - {{ e.model }}</code> exists
+            {% elif e.missing == 'blank' %}<code>BLANK GLASS - {{ e.model }}</code> not found
+            {% else %}<code>DRILLED GLASS - {{ e.model }}</code> not found
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+      Add the stock items in Tally and re-sync masters before publishing.
+    </div>
+  {% endif %}
+
+  <form method="post" action="/production/line-voucher" class="lp-confirm" id="lp-post-form">
+    <input type="hidden" name="company" value="{{ company }}">
+    <input type="hidden" name="date" value="{{ report_date }}">
+    <input type="hidden" name="force_repost" id="lp-force-repost" value="">
+    <div style="display:flex; gap:18px; align-items:end; flex-wrap:wrap;">
+      <div>
+        <label style="display:block; font-size:.82rem; color:var(--ink-soft);">Scrap rate (₹/Kg)</label>
+        <input type="number" name="scrap_rate" step="0.01" value="{{ '%.2f' % scrap_rate }}" required>
+      </div>
+      <div>
+        <strong>Plain glass scrap:</strong> {{ '%.2f' % result.plain_scrap_kg }} Kg<br>
+        <strong>Circle cullet scrap:</strong> {{ '%.2f' % result.circle_scrap_kg }} Kg
+      </div>
+      <div style="margin-left:auto; display:flex; flex-direction:column; gap:6px; align-items:flex-end;">
+        {% if latest and latest.status == 'posted' %}
+          <button type="button" disabled
+                  title="Voucher already posted — cannot post the same date twice."
+                  style="opacity:.55; cursor:not-allowed;">
+            ✅ Already posted to Tally — voucher #{{ latest.tally_voucher_number or latest.tally_master_id }}
+          </button>
+          <button type="button" id="lp-force-btn"
+                  style="background:#fff; color:#b91c1c; border:1px solid #fecaca; padding:6px 12px; border-radius:6px; cursor:pointer; font-size:.82rem;">
+            ⚠ Force re-post (delete the existing voucher in Tally first)
+          </button>
+        {% else %}
+          <button type="button" id="lp-preview-btn">Confirm and Post to Tally</button>
+        {% endif %}
+      </div>
+    </div>
+  </form>
+
+  <!-- Pre-post sample / preview modal -->
+  <dialog id="lp-preview-dialog" style="border:1px solid var(--line); border-radius:12px; padding:0; width:min(820px, 94vw); max-height:88vh; overflow:hidden; box-shadow:0 20px 50px rgba(0,0,0,.18);">
+    <div style="padding:14px 18px; border-bottom:1px solid var(--line); background:linear-gradient(180deg, var(--navy-50), #fff);">
+      <h3 id="lp-preview-title" style="margin:0; font-size:1.05rem; color:var(--navy-900);">Sample voucher — review before posting</h3>
+      <p class="muted" style="margin:4px 0 0; font-size:.84rem;">{{ company }} · {{ report_date }} · scrap rate ₹<span id="lp-preview-rate">{{ '%.2f' % scrap_rate }}</span>/Kg</p>
+    </div>
+    <div style="padding:14px 18px; overflow-y:auto; max-height:60vh;">
+      <p style="margin:0 0 8px; font-size:.86rem;">This is what will be sent to Tally. Verify items, godowns, quantities and rates, then click <strong>Yes, post to Tally</strong>.</p>
+      <table style="width:100%; border-collapse:collapse; font-size:.85rem;">
+        <thead>
+          <tr style="background:var(--navy-50); color:var(--navy-900);">
+            <th style="text-align:left; padding:6px 8px; border-bottom:1px solid var(--line);">Item</th>
+            <th style="text-align:left; padding:6px 8px; border-bottom:1px solid var(--line);">Godown</th>
+            <th style="text-align:left; padding:6px 8px; border-bottom:1px solid var(--line);">Direction</th>
+            <th style="text-align:right; padding:6px 8px; border-bottom:1px solid var(--line);">Quantity</th>
+            <th style="text-align:right; padding:6px 8px; border-bottom:1px solid var(--line);">Rate</th>
+            <th style="text-align:right; padding:6px 8px; border-bottom:1px solid var(--line);">Amount</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for e in result.voucher.inventory_entries %}
+          <tr>
+            <td style="padding:5px 8px; border-bottom:1px solid var(--line);">{{ e.item_name }}</td>
+            <td style="padding:5px 8px; border-bottom:1px solid var(--line);">{{ e.godown }}</td>
+            <td style="padding:5px 8px; border-bottom:1px solid var(--line);">{{ 'OUT (consume)' if e.direction == 'out' else 'IN (produce)' }}</td>
+            <td style="padding:5px 8px; border-bottom:1px solid var(--line); text-align:right;">{{ '%g' % e.quantity }} {{ e.uom }}</td>
+            <td style="padding:5px 8px; border-bottom:1px solid var(--line); text-align:right;">{% if e.rate %}{{ '%.2f' % e.rate }}{% else %}—{% endif %}</td>
+            <td style="padding:5px 8px; border-bottom:1px solid var(--line); text-align:right;">{% if e.amount %}₹ {{ '%.2f' % e.amount }}{% else %}—{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <p id="lp-force-warning" style="display:none; margin-top:14px; padding:10px 12px; background:#fee2e2; border:1px solid #fca5a5; border-radius:6px; color:#991b1b; font-size:.86rem;">
+        ⚠ <strong>Force re-post is enabled.</strong> Voucher #{{ latest.tally_voucher_number or latest.tally_master_id if latest else '' }} already exists in Tally. Posting now will create a SECOND voucher for the same date. Make sure you've deleted the previous one in Tally first, otherwise both will reflect in your books.
+      </p>
+    </div>
+    <div style="padding:12px 18px; border-top:1px solid var(--line); display:flex; justify-content:flex-end; gap:8px; background:#fafafa;">
+      <button type="button" id="lp-preview-cancel"
+              style="background:#fff; border:1px solid var(--line); color:var(--ink-soft); padding:8px 16px; border-radius:6px; cursor:pointer;">Cancel</button>
+      <button type="button" id="lp-preview-confirm"
+              style="background:#16a34a; color:#fff; border:1px solid #16a34a; padding:8px 18px; border-radius:6px; font-weight:600; cursor:pointer;">
+        Yes, post to Tally
+      </button>
+    </div>
+  </dialog>
+
+  <script>
+    (function () {
+      var dlg = document.getElementById("lp-preview-dialog");
+      var form = document.getElementById("lp-post-form");
+      var rateInput = form.querySelector('input[name="scrap_rate"]');
+      var rateSpan = document.getElementById("lp-preview-rate");
+      var previewBtn = document.getElementById("lp-preview-btn");
+      var forceBtn = document.getElementById("lp-force-btn");
+      var cancelBtn = document.getElementById("lp-preview-cancel");
+      var confirmBtn = document.getElementById("lp-preview-confirm");
+      var forceWarn = document.getElementById("lp-force-warning");
+      var forceField = document.getElementById("lp-force-repost");
+      function openPreview(force) {
+        if (rateSpan) rateSpan.textContent = parseFloat(rateInput.value || "0").toFixed(2);
+        forceField.value = force ? "1" : "";
+        if (forceWarn) forceWarn.style.display = force ? "block" : "none";
+        confirmBtn.textContent = force ? "Yes, force re-post" : "Yes, post to Tally";
+        confirmBtn.style.background = force ? "#b91c1c" : "#16a34a";
+        confirmBtn.style.borderColor = force ? "#b91c1c" : "#16a34a";
+        dlg.showModal();
+      }
+      if (previewBtn) previewBtn.addEventListener("click", function () { openPreview(false); });
+      if (forceBtn) forceBtn.addEventListener("click", function () {
+        if (!confirm("Force-post creates a SECOND voucher in Tally for the same date. Confirm only after you have deleted the prior voucher in Tally. Continue?")) return;
+        openPreview(true);
+      });
+      cancelBtn.addEventListener("click", function () { dlg.close(); });
+      confirmBtn.addEventListener("click", function () { form.submit(); });
+    })();
+  </script>
+{% endif %}
+
+{% endblock %}

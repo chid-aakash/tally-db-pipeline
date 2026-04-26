@@ -13,7 +13,7 @@
 
 {% if entry.status == "posted" %}
 <div class="card" style="border-left: 4px solid #16a34a;">
-  <strong>✓ Posted to Tally</strong> at {{ entry.posted_at.strftime("%Y-%m-%d %H:%M:%S") }} UTC
+  <strong>✓ Posted to Tally</strong> at {{ entry.posted_at.strftime("%d-%m-%Y %H:%M:%S") }} UTC
   {% if entry.tally_master_id %}<br><span class="muted">Master ID: {{ entry.tally_master_id }}</span>{% endif %}
 </div>
 {% elif entry.status == "failed" %}

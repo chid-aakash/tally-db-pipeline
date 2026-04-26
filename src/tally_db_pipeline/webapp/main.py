@@ -15,8 +15,8 @@ from __future__ import annotations
 from datetime import date, datetime
 from pathlib import Path
 
-from fastapi import FastAPI, Form, HTTPException, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -31,11 +31,15 @@ from ..models import (
     ConsumptionReportSelection,
     DailyProductionReport,
     DPRHourlyCell,
+    DPRHourModel,
     DPRIdleEvent,
     ProcessCatalogEntry,
     ProcessStage,
+    LineDailyVoucherPost,
     ProductionEntry,
     ProductionEntryLine,
+    ProductionModelHole,
+    ProductionModelSpec,
     ProductionProcess,
     ShiftPresetSlot,
     SJPolicy,
@@ -54,6 +58,8 @@ from ..policy import (
     resolve_items_for_role,
 )
 from ..tally_client import TallyClient
+from .. import line_voucher
+from .. import onedrive_client
 
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -105,8 +111,24 @@ def _nice_date(iso: str) -> str:
     )
 
 
+def _dmy(value) -> str:
+    """Format a date (or YYYY-MM-DD string) as DD-MM-YYYY for display.
+    Returns the input unchanged if it can't be parsed, so non-date strings
+    pass through harmlessly."""
+    if value in (None, ""):
+        return ""
+    if hasattr(value, "strftime"):
+        return value.strftime("%d-%m-%Y")
+    s = str(value)[:10]
+    try:
+        return datetime.strptime(s, "%Y-%m-%d").strftime("%d-%m-%Y")
+    except (TypeError, ValueError):
+        return str(value)
+
+
 templates.env.filters["inr"] = _inr
 templates.env.filters["nice_date"] = _nice_date
+templates.env.filters["dmy"] = _dmy
 
 app = FastAPI(title="Tally Production Entry")
 
@@ -128,6 +150,94 @@ def _self_heal_production_processes() -> None:
 
 
 _self_heal_production_processes()
+
+
+def _self_heal_production_process_role() -> None:
+    """Add the `role` column to production_processes / process_catalog if
+    they predate the Input/Output split, then backfill production rows by
+    inferring from the label ('input' substring → 'input', else 'output')."""
+    from sqlalchemy import inspect, text
+    insp = inspect(engine)
+    for table in ("production_processes", "process_catalog"):
+        if table not in insp.get_table_names():
+            continue
+        cols = {c["name"] for c in insp.get_columns(table)}
+        if "role" in cols:
+            continue
+        with engine.begin() as conn:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN role VARCHAR(10)"))
+            conn.execute(text(
+                f"UPDATE {table} SET role = "
+                "CASE WHEN section = 'production' AND lower(label) LIKE '%input%' THEN 'input' "
+                "     WHEN section = 'production' THEN 'output' "
+                "     ELSE NULL END"
+            ))
+
+
+_self_heal_production_process_role()
+
+
+def _self_heal_validate_count_column() -> None:
+    """Add the `validate_count` column where missing, defaulting to TRUE
+    (1) so existing production rows keep their pre-flag behaviour."""
+    from sqlalchemy import inspect, text
+    insp = inspect(engine)
+    for table in ("production_processes", "process_catalog"):
+        if table not in insp.get_table_names():
+            continue
+        cols = {c["name"] for c in insp.get_columns(table)}
+        if "validate_count" in cols:
+            continue
+        with engine.begin() as conn:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN validate_count BOOLEAN NOT NULL DEFAULT 1"))
+
+
+_self_heal_validate_count_column()
+
+
+def _self_heal_drop_legacy_spec_columns() -> None:
+    """Drop the original single-hole columns from production_model_specs.
+
+    The first cut of the model-spec feature stored one (radius, count) pair
+    per model. Multi-diameter holes now live in production_model_holes, so
+    these columns are dead weight — and worse, they are NOT NULL so any
+    INSERT that omits them fails. Drop them on startup if present (SQLite
+    3.35+ supports DROP COLUMN)."""
+    from sqlalchemy import inspect, text
+    insp = inspect(engine)
+    if "production_model_specs" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("production_model_specs")}
+    legacy = [c for c in ("hole_radius_mm", "hole_count") if c in cols]
+    if not legacy:
+        return
+    with engine.begin() as conn:
+        for col in legacy:
+            try:
+                conn.execute(text(f"ALTER TABLE production_model_specs DROP COLUMN {col}"))
+            except Exception:
+                # If SQLite is too old, leave the column — the ORM model
+                # below now declares it as nullable so inserts still work.
+                pass
+
+
+_self_heal_drop_legacy_spec_columns()
+
+
+def _self_heal_add_price_columns() -> None:
+    """Add blank/drilled/printed price columns to production_model_specs if missing."""
+    from sqlalchemy import inspect, text
+    insp = inspect(engine)
+    if "production_model_specs" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("production_model_specs")}
+    with engine.begin() as conn:
+        for col in ("blank_price", "drilled_price", "printed_price"):
+            if col not in cols:
+                conn.execute(text(f"ALTER TABLE production_model_specs ADD COLUMN {col} FLOAT"))
+
+
+_self_heal_add_price_columns()
 # Ensure newly introduced tables exist (idempotent). Sync also does this, but the
 # webapp may be started before a full sync on a fresh machine.
 Base.metadata.create_all(bind=engine)
@@ -1773,6 +1883,8 @@ class _DprRow:
     label: str
     stage: str
     group: str | None = None
+    role: str | None = None  # 'input'|'output' for production rows; None elsewhere
+    validate_count: bool = True
 
 
 def _dpr_rows_for_report(
@@ -1799,6 +1911,8 @@ def _dpr_rows_for_report(
             continue
         by_section[r.section].append(_DprRow(
             key=str(r.id), label=r.label, stage=r.stage, group=r.group_label,
+            role=r.role,
+            validate_count=bool(getattr(r, "validate_count", True)),
         ))
     grouped: list[tuple[str, list[_DprRow]]] = []
     seen: dict[str, int] = {}
@@ -1850,6 +1964,67 @@ def _dpr_load_cells(
     return matrix
 
 
+def _dpr_load_hour_models(report: DailyProductionReport) -> dict[str, str]:
+    """Return `{hour_key: model}` for hours whose model differs from the
+    report's primary model. Hours absent from the dict use `report.model`."""
+    return {hm.hour_key: hm.model for hm in report.hour_models if hm.model}
+
+
+def _dpr_resolve_hour_model(hour_models: dict[str, str], primary: str, hour_key: str) -> str:
+    return (hour_models.get(hour_key) or primary or "").strip()
+
+
+def _dpr_resolve_hour_model_chain(
+    hour_models: dict[str, str],
+    primary: str,
+    hour_slots: list[tuple[str, str]],
+) -> dict[str, str]:
+    """Walk hour columns left→right, propagating each override forward
+    until the next change point. Returns `{hour_key: effective_model}`.
+
+    A model entered at hour N is the model running for hours N, N+1, ...
+    until another override appears."""
+    chain: dict[str, str] = {}
+    current = (primary or "").strip()
+    for key, _label in hour_slots:
+        override = (hour_models.get(key) or "").strip()
+        if override:
+            current = override
+        chain[key] = current
+    return chain
+
+
+def _dpr_production_by_model(
+    cells: dict[str, dict[str, dict[str, float]]],
+    hour_slots: list[tuple[str, str]],
+    production_rows: list[_DprRow],
+    hour_models: dict[str, str],
+    primary_model: str,
+) -> list[dict]:
+    """Sum production output per model across hour columns.
+
+    Picks the row identified as 'output' role per stage (or falls back to the
+    last production row if no role flag is set). Returns
+    `[{"model": str, "qty": float, "hours": [labels]}]` ordered by appearance."""
+    output_keys = [r.key for r in production_rows if r.role == "output"] or [r.key for r in production_rows]
+    chain = _dpr_resolve_hour_model_chain(hour_models, primary_model, hour_slots)
+    by_model: dict[str, dict] = {}
+    order: list[str] = []
+    for hkey, hlabel in hour_slots:
+        model = chain.get(hkey, "")
+        if not model:
+            continue
+        qty = 0.0
+        for rkey in output_keys:
+            qty += cells.get("production", {}).get(rkey, {}).get(hkey, 0.0) or 0.0
+        if model not in by_model:
+            by_model[model] = {"model": model, "qty": 0.0, "hours": []}
+            order.append(model)
+        by_model[model]["qty"] += qty
+        by_model[model]["hours"].append(hlabel)
+    return [by_model[m] for m in order]
+
+
 def _dpr_compute_totals(
     cells: dict[str, dict[str, dict[str, float]]],
     hour_slots: list[tuple[str, str]],
@@ -1876,6 +2051,17 @@ def _dpr_compute_totals(
         washing = prod_rows.get("washing_incl_rework", 0.0)
     if washing <= 0:
         washing = max(prod_rows.values()) if prod_rows else 0.0
+    # Line-input total drives the rejection/rework % denominators. Prefer the
+    # explicit role='input' production row(s); fall back to the largest row
+    # total so percentages stay meaningful before role flags are filled in.
+    line_input = 0.0
+    if production_rows:
+        line_input = sum(
+            prod_rows.get(r.key, 0.0)
+            for r in production_rows if r.role == "input"
+        )
+    if line_input <= 0:
+        line_input = max(prod_rows.values()) if prod_rows else 0.0
     total_rej = dpr.grand_total(rej)
     total_rw = dpr.grand_total(rw)
     return {
@@ -1883,9 +2069,137 @@ def _dpr_compute_totals(
         "rejection": {"rows": rej_rows, "cols": rej_col, "total": total_rej},
         "rework": {"rows": rw_rows, "cols": rw_col, "total": total_rw},
         "output_for_pct": washing,
-        "rejection_pct": dpr.safe_pct(total_rej, washing),
-        "rework_pct": dpr.safe_pct(total_rw, washing),
+        "input_for_pct": line_input,
+        "rejection_pct": dpr.safe_pct(total_rej, line_input),
+        "rework_pct": dpr.safe_pct(total_rw, line_input),
     }
+
+
+@app.get("/production/review", response_class=HTMLResponse)
+def production_review(
+    request: Request,
+    date: str | None = None,
+    cutoff: str | None = None,
+):
+    from datetime import date as _d
+    today = _d.today().isoformat()
+    review_date = date or today
+
+    # Cutoff options = the S1 hour slots in chronological order. Each option
+    # represents "everything logged up to and including this hour". Labels are
+    # "< 9:00 AM" style so the dropdown reads like the paper board ("until 1 PM").
+    s1_slots = list(dpr.SHIFT_PRESETS.get("S1") or dpr.HOUR_SLOTS)
+    s1_slots = [(k, lbl) for (k, lbl) in s1_slots if k != "ot"]
+
+    def _label_to_clock(label: str) -> str:
+        # Paper labels ("8", "9", "12", "1", "2:30", "5:30") -> "< 9:00 AM",
+        # "< 5:30 PM" for the cutoff dropdown. 8..11 are AM; 12 and 1..7 are PM.
+        s = (label or "").strip()
+        try:
+            n = int(s.split(":", 1)[0])
+        except ValueError:
+            return f"< {s}"
+        ampm = "AM" if 8 <= n <= 11 else "PM"
+        clock = s if ":" in s else f"{s}:00"
+        return f"< {clock} {ampm}"
+
+    cutoff_options = []
+    for idx, (k, lbl) in enumerate(s1_slots):
+        cutoff_options.append({
+            "key": k,
+            "label": lbl,
+            "display": _label_to_clock(lbl),
+            "index": idx,
+        })
+
+    # Resolve effective cutoff key. Default to the last slot.
+    valid_keys = {opt["key"] for opt in cutoff_options}
+    if cutoff and cutoff in valid_keys:
+        cutoff_key = cutoff
+    else:
+        cutoff_key = cutoff_options[-1]["key"] if cutoff_options else ""
+    cutoff_index = next(
+        (opt["index"] for opt in cutoff_options if opt["key"] == cutoff_key), -1
+    )
+    included_keys = {
+        opt["key"] for opt in cutoff_options if opt["index"] <= cutoff_index
+    }
+    cutoff_display = next(
+        (opt["display"] for opt in cutoff_options if opt["key"] == cutoff_key),
+        "",
+    )
+
+    # Per-line cumulative aggregates (input, rej, rework) across all reports
+    # for this date, restricted to hour cells at or before the cutoff.
+    totals: dict[str, dict[str, float]] = {}
+    report_id_by_line: dict[str, int] = {}
+
+    with _session() as session:
+        reports = list(session.scalars(
+            select(DailyProductionReport).where(
+                DailyProductionReport.report_date == review_date,
+            )
+        ))
+        for r in reports:
+            line_label = f"LINE-{r.line}"
+            if line_label not in report_id_by_line or (r.shift or "").upper() == "S1":
+                report_id_by_line[line_label] = r.id
+
+        report_ids = [r.id for r in reports]
+        line_by_report = {r.id: r.line for r in reports}
+        if report_ids:
+            cells = list(session.scalars(
+                select(DPRHourlyCell).where(DPRHourlyCell.report_id.in_(report_ids))
+            ))
+            for c in cells:
+                if c.hour_key == "cumulative":
+                    continue
+                if c.hour_key not in included_keys:
+                    continue
+                rline = line_by_report.get(c.report_id)
+                if not rline:
+                    continue
+                line_label = f"LINE-{rline}"
+                bucket = totals.setdefault(
+                    line_label, {"input": 0.0, "rej": 0.0, "rework": 0.0}
+                )
+                val = float(c.value or 0)
+                if c.section == "production" and c.row_key == "single_edger_input":
+                    bucket["input"] += val
+                elif c.section == "rejection":
+                    bucket["rej"] += val
+                elif c.section == "rework":
+                    bucket["rework"] += val
+
+    lines = sorted(
+        {f"LINE-{r.line}" for r in reports},
+        key=lambda s: (len(s), s),
+    )
+
+    prefill: dict[str, dict[str, float]] = {}
+    for line in lines:
+        b = totals.get(line, {"input": 0.0, "rej": 0.0, "rework": 0.0})
+        prefill[line] = {
+            "input": b["input"],
+            "rej": b["rej"],
+            "rework": b["rework"],
+            "actual": b["input"] - b["rej"],
+        }
+
+    return templates.TemplateResponse(
+        request,
+        "production_review.html",
+        {
+            "review_date": review_date,
+            "today": today,
+            "lines": lines,
+            "cutoff_options": cutoff_options,
+            "cutoff_key": cutoff_key,
+            "cutoff_display": cutoff_display,
+            "prefill": prefill,
+            "report_id_by_line": report_id_by_line,
+        },
+    )
 
 
 @app.get("/production/daily-report", response_class=HTMLResponse)
@@ -1896,10 +2210,10 @@ def dpr_list(
 ):
     from datetime import date as _d
     with _session() as session:
-        companies = _list_companies(session) or sorted(
-            c for c in session.scalars(select(Voucher.company_name).distinct()) if c
-        )
-        company = company or (companies[0] if companies else "")
+        # Company is fixed to TALLY_COMPANY_NAME — no longer a user-chosen
+        # dropdown. The query-param is still accepted (older bookmarks) but
+        # only filters when it matches the configured company.
+        company = _tally_company_name()
         q = select(DailyProductionReport).order_by(
             DailyProductionReport.report_date.desc(),
             DailyProductionReport.line,
@@ -1911,17 +2225,37 @@ def dpr_list(
         if date:
             q = q.where(DailyProductionReport.report_date == date)
         reports = list(session.scalars(q))
+        draft_count = sum(1 for r in reports if (r.status or "").lower() == "draft")
+        # Customer / Model cascading dropdowns for the New report form. Only
+        # models whose BLANK GLASS / DRILLED GLASS stock items both exist in
+        # Tally are loaded — the BG-NF / DG-NF / both-missing flags exclude
+        # the rest, mirroring the per-hour entry picker.
+        all_specs = list(session.scalars(
+            select(ProductionModelSpec).order_by(
+                ProductionModelSpec.company_name, ProductionModelSpec.model
+            )
+        ))
+        status_map = _model_missing_status(session, [s.model for s in all_specs])
+        models_by_customer: dict[str, list[str]] = {}
+        for s in all_specs:
+            if status_map.get(s.model, "ok") != "ok":
+                continue
+            cust = (s.company_name or "").strip()
+            if not cust:
+                continue
+            models_by_customer.setdefault(cust, []).append(s.model)
     return templates.TemplateResponse(
         request,
         "production_list.html",
         {
-            "companies": companies,
-            "selected_company": company,
+            "tally_company_name": company,
             "filter_date": date or "",
             "reports": reports,
+            "draft_count": draft_count,
             "today": _d.today().isoformat(),
             "shift_options": dpr.SHIFT_OPTIONS,
             "line_options": dpr.LINE_OPTIONS,
+            "models_by_customer": models_by_customer,
         },
     )
 
@@ -1979,6 +2313,13 @@ def dpr_edit(request: Request, report_id: int):
         report = session.get(DailyProductionReport, report_id)
         if not report:
             raise HTTPException(404, "report not found")
+        # Submitted reports are locked — the user gets bounced to the
+        # read-only summary instead.
+        if (report.status or "").strip().lower() == "submitted":
+            return RedirectResponse(
+                f"/production/daily-report/{report_id}",
+                status_code=303,
+            )
         hour_slots = dpr.load_hour_slots(report.hour_slots_json, report.shift)
         production_rows, rejection_groups, rework_rows = _dpr_rows_for_report(session, report)
         sections_rows = {
@@ -1989,7 +2330,28 @@ def dpr_edit(request: Request, report_id: int):
         cells = _dpr_load_cells(session, report, hour_slots, sections_rows)
         idle_events = sorted(report.idle_events, key=lambda e: e.ordinal)
         totals = _dpr_compute_totals(cells, hour_slots, production_rows)
+        hour_models = _dpr_load_hour_models(report)
+        hour_model_chain = _dpr_resolve_hour_model_chain(hour_models, report.model or "", hour_slots)
+        # Distinct models in the order they first ran during the shift.
+        # Used to display "VEDA 3B | New Model | …" beside the editable
+        # primary-model input on the edit page.
+        distinct_models: list[str] = []
+        for _k, _l in hour_slots:
+            m = hour_model_chain.get(_k, "")
+            if m and m not in distinct_models:
+                distinct_models.append(m)
+        if not distinct_models and (report.model or "").strip():
+            distinct_models = [report.model.strip()]
         config_empty = not (production_rows or rejection_groups or rework_rows)
+        default_doc_no = _dpr_doc_no_for_display(session, report)
+        rd = report.report_date
+        if isinstance(rd, str):
+            from datetime import date as _date
+            try:
+                rd = _date.fromisoformat(rd)
+            except ValueError:
+                rd = _date.today()
+        default_rev_date = rd.strftime("%d/%m/%Y")
     return templates.TemplateResponse(
         request,
         "production_edit.html",
@@ -2003,11 +2365,70 @@ def dpr_edit(request: Request, report_id: int):
             "cells": cells,
             "idle_events": idle_events,
             "totals": totals,
+            "hour_models": hour_models,
+            "hour_model_chain": hour_model_chain,
+            "distinct_models": distinct_models,
             "shift_options": dpr.SHIFT_OPTIONS,
             "line_options": dpr.LINE_OPTIONS,
             "config_empty": config_empty,
+            "default_doc_no": default_doc_no,
+            "default_rev_date": default_rev_date,
         },
     )
+
+
+_OLD_AUTO_DOC_PATTERN = "/PRD-ENTRY/"
+
+
+def _dpr_doc_no_for_display(session: Session, report: DailyProductionReport) -> str:
+    """Return the doc_no to show on edit/summary pages.
+
+    If the stored value looks like an earlier auto-generated format (we used
+    'PRD-ENTRY' as the segment marker), regenerate using the current format
+    so the user doesn't have to manually clear stale auto-numbers."""
+    stored = (report.doc_no or "").strip()
+    if stored and _OLD_AUTO_DOC_PATTERN not in stored:
+        return stored
+    return _dpr_default_doc_no(session, report)
+
+
+def _dpr_default_doc_no(session: Session, report: DailyProductionReport) -> str:
+    """Generate a doc-no like AAPL/26-27/PRD-ENTRY/DD-MM-YYYY/LINE<n>[_seq].
+
+    The company prefix is the initials of the company name (Avinash
+    Appliances Private Limited → AAPL). FY is computed from report_date
+    (Apr–Mar Indian FY). Sequential suffix is appended (_2, _3, ...) when
+    multiple DPR records exist for the same (company, date, line) — the
+    first such report has no suffix."""
+    co = report.company_name or ""
+    # Strip trailing parenthetical content (e.g. "(April 26 - March 27)") so
+    # FY/date suffixes don't pollute the initials.
+    import re as _re
+    co_clean = _re.sub(r"\s*\([^)]*\)\s*$", "", co).strip()
+    initials = "".join(w[0] for w in co_clean.split() if w and w[0].isalpha()).upper()[:6] or "CO"
+    rd = report.report_date
+    if isinstance(rd, str):
+        from datetime import date as _date
+        try:
+            d = _date.fromisoformat(rd)
+        except ValueError:
+            d = _date.today()
+    else:
+        d = rd
+    fy_start = d.year if d.month >= 4 else d.year - 1
+    fy = f"{fy_start % 100:02d}-{(fy_start + 1) % 100:02d}"
+    same_day_reports = list(session.scalars(
+        select(DailyProductionReport)
+        .where(
+            DailyProductionReport.company_name == report.company_name,
+            DailyProductionReport.report_date == report.report_date,
+            DailyProductionReport.line == report.line,
+        )
+        .order_by(DailyProductionReport.id)
+    ))
+    seq = next((i for i, r in enumerate(same_day_reports, start=1) if r.id == report.id), 1)
+    date_short = f"{d.day:02d}-{d.month}-{d.year % 100:02d}"
+    return f"{initials}/PRD/{date_short}/{report.shift}/LINE-{report.line}_{seq}"
 
 
 def _dpr_parse_float(raw) -> float:
@@ -2028,6 +2449,14 @@ async def dpr_save(request: Request, report_id: int):
         report = session.get(DailyProductionReport, report_id)
         if not report:
             raise HTTPException(404, "report not found")
+        # Once a report has been pushed to Tally (status == 'submitted') it is
+        # frozen — any edit/save/finalize request is rejected so the books
+        # match what was posted.
+        if (report.status or "").strip().lower() == "submitted":
+            raise HTTPException(
+                403,
+                "This report has already been posted to Tally and cannot be edited.",
+            )
 
         # ---- Meta fields ----
         report.model = (form.get("model") or "").strip()
@@ -2075,6 +2504,26 @@ async def dpr_save(request: Request, report_id: int):
                             value=v,
                         ))
 
+        # ---- Per-hour model overrides ----
+        # Only persist *change points* — hours where the entered model
+        # differs from the previous resolved model. Forward-fill is a render
+        # concern; storing every echoed cell would clutter the table and
+        # break the "blank = inherit from previous" mental model.
+        for existing in list(report.hour_models):
+            session.delete(existing)
+        session.flush()
+        primary_model = (report.model or "").strip()
+        prev_model = primary_model
+        for key, _label in new_slots:
+            raw = (form.get(f"hour_model__{key}") or "").strip()
+            if raw and raw != prev_model:
+                session.add(DPRHourModel(
+                    report_id=report.id,
+                    hour_key=key,
+                    model=raw,
+                ))
+                prev_model = raw
+
         # ---- Idle events ----
         for existing in list(report.idle_events):
             session.delete(existing)
@@ -2100,16 +2549,572 @@ async def dpr_save(request: Request, report_id: int):
                 remarks=(form.get(f"idle__{idx}__remarks") or "").strip() or None,
             ))
 
+        # Status state machine:
+        #   draft → saved (via the "Save" button, action=submit). Saved means
+        #     "ready to post but not yet pushed to Tally" — still editable.
+        #   saved → submitted ONLY happens when the SJ-LINE voucher is
+        #     successfully posted to Tally (line_publish_submit).
         if action == "submit":
-            report.status = "submitted"
+            report.status = "saved"
             report.submitted_at = datetime.utcnow()
         report.updated_at = datetime.utcnow()
         session.commit()
 
         target = f"/production/daily-report/{report_id}"
-        if action != "submit":
+        # ``save`` keeps the user on the edit page; ``submit`` (now meaning
+        # finalize-as-saved) and ``view`` jump to the summary.
+        if action == "save":
             target += "/edit"
     return RedirectResponse(target, status_code=303)
+
+
+@app.get("/production/daily-report/{report_id}/entry", response_class=HTMLResponse)
+def dpr_entry(request: Request, report_id: int, hour: str | None = None):
+    with _session() as session:
+        report = session.get(DailyProductionReport, report_id)
+        if not report:
+            raise HTTPException(404, "report not found")
+        hour_slots = dpr.load_hour_slots(report.hour_slots_json, report.shift)
+        valid_keys = [k for k, _ in hour_slots]
+        if not valid_keys:
+            raise HTTPException(400, "report has no hour slots configured")
+        selected_hour = hour if hour in valid_keys else valid_keys[0]
+        selected_label = next(lbl for k, lbl in hour_slots if k == selected_hour)
+        production_rows, rejection_groups, rework_rows = _dpr_rows_for_report(session, report)
+        sections_rows = {
+            "production": production_rows,
+            "rejection": [r for _, rows in rejection_groups for r in rows],
+            "rework": rework_rows,
+        }
+        cells = _dpr_load_cells(session, report, hour_slots, sections_rows)
+        config_empty = not (production_rows or rejection_groups or rework_rows)
+        prefilled_keys = {
+            "rejection": {
+                r.key
+                for _, rows in rejection_groups
+                for r in rows
+                if cells["rejection"][r.key].get(selected_hour)
+            },
+            "rework": {
+                r.key for r in rework_rows
+                if cells["rework"][r.key].get(selected_hour)
+            },
+        }
+        stage_chain = _dpr_build_stage_chain(production_rows, rejection_groups)
+        hour_models = _dpr_load_hour_models(report)
+        hour_model_chain = _dpr_resolve_hour_model_chain(hour_models, report.model or "", hour_slots)
+        selected_model = hour_model_chain.get(selected_hour, "")
+        all_specs = list(session.scalars(
+            select(ProductionModelSpec).order_by(
+                ProductionModelSpec.company_name, ProductionModelSpec.model
+            )
+        ))
+        status_map = _model_missing_status(session, [s.model for s in all_specs])
+        models_by_customer: dict[str, list[str]] = {}
+        spec_customer_by_model: dict[str, str] = {}
+        for s in all_specs:
+            if status_map.get(s.model, "ok") != "ok":
+                continue  # missing BLANK or DRILLED stock item in Tally → can't post voucher
+            cust = s.company_name or ""
+            models_by_customer.setdefault(cust, []).append(s.model)
+            spec_customer_by_model[s.model] = cust
+        selected_customer = spec_customer_by_model.get(selected_model, "")
+    return templates.TemplateResponse(
+        request,
+        "production_entry.html",
+        {
+            "report": report,
+            "hour_slots": hour_slots,
+            "selected_hour": selected_hour,
+            "selected_label": selected_label,
+            "selected_model": selected_model,
+            "selected_customer": selected_customer,
+            "models_by_customer": models_by_customer,
+            "production_rows": production_rows,
+            "rejection_groups": rejection_groups,
+            "rework_rows": rework_rows,
+            "cells": cells,
+            "prefilled_keys": prefilled_keys,
+            "stage_chain": stage_chain,
+            "config_empty": config_empty,
+        },
+    )
+
+
+def _dpr_build_stage_chain(
+    production_rows: list[_DprRow],
+    rejection_groups: list[tuple[str, list[_DprRow]]],
+) -> list[dict]:
+    """Derive a per-stage I/O chain from the report's row catalog.
+
+    For each stage encountered (in production-row order):
+      - input_row_key: the production row whose label ends in 'Input', if any
+      - output_row_key: the other production row for this stage (treated as
+        the stage's output) — last seen wins if multiple
+      - When a stage has no explicit input row, its effective input is the
+        previous stage's output (no WIP between stages, per user spec).
+      - rejection_row_keys: rejection rows whose stage matches.
+    """
+    stages_seen: list[str] = []
+    by_stage: dict[str, dict] = {}
+    for r in production_rows:
+        s = by_stage.setdefault(r.stage, {
+            "key": r.stage,
+            "label": r.stage.replace("_", " ").title(),
+            "input_row_key": None,
+            "input_row_label": None,
+            "output_row_key": None,
+            "output_row_label": None,
+            "rejection_row_keys": [],
+            "rejection_rows": [],
+            "validate_count": True,
+        })
+        if r.stage not in stages_seen:
+            stages_seen.append(r.stage)
+        # Prefer the explicit role flag; fall back to label heuristic for
+        # rows that haven't been migrated yet.
+        is_input = (r.role == "input") if r.role else ("input" in (r.label or "").lower())
+        if is_input:
+            s["input_row_key"] = r.key
+            s["input_row_label"] = r.label
+        else:
+            s["output_row_key"] = r.key
+            s["output_row_label"] = r.label
+            # Output row drives the stage's allocation check.
+            s["validate_count"] = bool(r.validate_count)
+            # Use this row's label to refine the stage label (e.g. "Single Edger")
+            lbl = r.label
+            for suffix in (" Output", " (Incl Rework)"):
+                if lbl.endswith(suffix):
+                    lbl = lbl[: -len(suffix)]
+            s["label"] = lbl
+
+    rej_by_stage: dict[str, list[_DprRow]] = {}
+    for _g, rows in rejection_groups:
+        for r in rows:
+            rej_by_stage.setdefault(r.stage, []).append(r)
+    for s_key, rows in rej_by_stage.items():
+        if s_key in by_stage:
+            by_stage[s_key]["rejection_row_keys"] = [r.key for r in rows]
+            by_stage[s_key]["rejection_rows"] = [{"key": r.key, "label": r.label} for r in rows]
+
+    chain: list[dict] = []
+    prev_output_key = None
+    for s_key in stages_seen:
+        s = by_stage[s_key]
+        # Effective input source: explicit input row OR previous stage's output
+        s["effective_input_row_key"] = s["input_row_key"] or prev_output_key
+        chain.append(s)
+        if s["output_row_key"]:
+            prev_output_key = s["output_row_key"]
+    return chain
+
+
+@app.post("/production/daily-report/{report_id}/entry/save")
+async def dpr_entry_save(request: Request, report_id: int):
+    form = await request.form()
+    hour_key = (form.get("hour") or "").strip()
+    with _session() as session:
+        report = session.get(DailyProductionReport, report_id)
+        if not report:
+            raise HTTPException(404, "report not found")
+        hour_slots = dpr.load_hour_slots(report.hour_slots_json, report.shift)
+        valid_keys = {k for k, _ in hour_slots}
+        if hour_key not in valid_keys:
+            raise HTTPException(400, "invalid hour slot")
+
+        # ---- Upsert cells for this hour only ----
+        # Delete existing cells for the selected hour, then re-insert from form.
+        # Other hours' cells and cumulative cells are left untouched.
+        for existing in list(report.cells):
+            if existing.hour_key == hour_key:
+                session.delete(existing)
+        session.flush()
+
+        prod_rows, rej_groups, rw_rows = _dpr_rows_for_report(session, report)
+        row_keys_by_section = {
+            "production": [r.key for r in prod_rows],
+            "rejection": [r.key for _, rows in rej_groups for r in rows],
+            "rework": [r.key for r in rw_rows],
+        }
+        for section, row_keys in row_keys_by_section.items():
+            for row_key in row_keys:
+                v = _dpr_parse_float(form.get(f"cell__{section}__{row_key}"))
+                if v:
+                    session.add(DPRHourlyCell(
+                        report_id=report.id,
+                        section=section,
+                        row_key=row_key,
+                        hour_key=hour_key,
+                        value=v,
+                    ))
+
+        # ---- Per-hour model override for this hour ----
+        # Compute the model that *would* be in effect at this hour from the
+        # previous change points alone (excluding any existing row for this
+        # hour). Persist only if the user's value differs.
+        primary_model = (report.model or "").strip()
+        existing_overrides = {hm.hour_key: hm.model for hm in report.hour_models if hm.hour_key != hour_key}
+        prev_model = primary_model
+        for k, _l in hour_slots:
+            if k == hour_key:
+                break
+            ov = (existing_overrides.get(k) or "").strip()
+            if ov:
+                prev_model = ov
+        raw_model = (form.get("hour_model") or "").strip()
+        for existing in list(report.hour_models):
+            if existing.hour_key == hour_key:
+                session.delete(existing)
+        session.flush()
+        if raw_model and raw_model != prev_model:
+            session.add(DPRHourModel(
+                report_id=report.id,
+                hour_key=hour_key,
+                model=raw_model,
+            ))
+
+        # ---- Append idle events (do NOT delete existing) ----
+        existing_max = max((e.ordinal for e in report.idle_events), default=-1)
+        idle_indices = sorted({
+            int(k.split("__")[2]) for k in form.keys()
+            if k.startswith("idle_new__") and len(k.split("__")) >= 3 and k.split("__")[2].isdigit()
+        })
+        next_ord = existing_max + 1
+        for idx in idle_indices:
+            desc = (form.get(f"idle_new__{idx}__description") or "").strip()
+            machine = (form.get(f"idle_new__{idx}__machine") or "").strip()
+            if not desc and not machine:
+                continue
+            session.add(DPRIdleEvent(
+                report_id=report.id,
+                ordinal=next_ord,
+                machine=machine or None,
+                description=desc or None,
+                from_time=(form.get(f"idle_new__{idx}__from") or "").strip() or None,
+                to_time=(form.get(f"idle_new__{idx}__to") or "").strip() or None,
+                time_loss_min=_dpr_parse_float(form.get(f"idle_new__{idx}__time_loss")),
+                attended_by=(form.get(f"idle_new__{idx}__attended_by") or "").strip() or None,
+                remarks=(form.get(f"idle_new__{idx}__remarks") or "").strip() or None,
+            ))
+            next_ord += 1
+
+        report.updated_at = datetime.utcnow()
+        session.commit()
+    return RedirectResponse(f"/production/daily-report/{report_id}/edit", status_code=303)
+
+
+@app.get("/production/daily-report/{report_id}/import/template")
+def dpr_import_template(report_id: int):
+    """Return an Excel template pre-filled with this report's structure
+    (sections, rows, hour columns) and live formulas for row/col totals.
+    A hidden first column carries `section:row_key` markers so we can map
+    the upload back to DB cells without relying on label matches."""
+    from io import BytesIO
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    with _session() as session:
+        report = session.get(DailyProductionReport, report_id)
+        if not report:
+            raise HTTPException(404, "report not found")
+        hour_slots = dpr.load_hour_slots(report.hour_slots_json, report.shift)
+        production_rows, rejection_groups, rework_rows = _dpr_rows_for_report(session, report)
+        sections_rows = {
+            "production": production_rows,
+            "rejection": [r for _, rows in rejection_groups for r in rows],
+            "rework": rework_rows,
+        }
+        cells = _dpr_load_cells(session, report, hour_slots, sections_rows)
+        idle_events_snapshot = [
+            (e.machine, e.description, e.from_time, e.to_time, e.time_loss_min, e.attended_by, e.remarks)
+            for e in sorted(report.idle_events, key=lambda x: x.ordinal)
+        ]
+        report_meta = {
+            "company_name": report.company_name,
+            "report_date": str(report.report_date),
+            "shift": report.shift,
+            "line": report.line,
+            "model": report.model or "",
+        }
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "DPR"
+
+    thin = Side(border_style="thin", color="999999")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    head_fill = PatternFill("solid", fgColor="DBEAFE")
+    grp_fill = PatternFill("solid", fgColor="EDE9FE")
+    cum_fill = PatternFill("solid", fgColor="FEF3C7")
+    total_fill = PatternFill("solid", fgColor="E5E7EB")
+
+    # Meta block
+    meta = [
+        ("Company", report_meta["company_name"]),
+        ("Date", report_meta["report_date"]),
+        ("Shift", report_meta["shift"]),
+        ("Line", str(report_meta["line"])),
+        ("Model", report_meta["model"]),
+    ]
+    for i, (k, v) in enumerate(meta, start=1):
+        ws.cell(row=i, column=1, value=k).font = Font(bold=True)
+        ws.cell(row=i, column=2, value=v)
+
+    # Column layout: A=marker (hidden), B=Description, C=Cumulative,
+    # D..(D+N-1)=hour slots
+    n_hours = len(hour_slots)
+    col_marker = 1
+    col_desc = 2
+    col_cum = 3
+    col_first_hour = 4
+    col_last_hour = col_first_hour + n_hours - 1
+    col_row_total = col_last_hour  # alias kept for column-width loop bound
+    last_col_letter = get_column_letter(col_last_hour)
+
+    header_row = 7
+    ws.cell(row=header_row, column=col_marker, value="_marker").font = Font(bold=True, italic=True, color="888888")
+    ws.cell(row=header_row, column=col_desc, value="Description").font = Font(bold=True)
+    ws.cell(row=header_row, column=col_cum, value="Cumulative").font = Font(bold=True)
+    ws.cell(row=header_row, column=col_cum).fill = cum_fill
+    for i, (_key, label) in enumerate(hour_slots):
+        c = ws.cell(row=header_row, column=col_first_hour + i, value=label)
+        c.font = Font(bold=True)
+        c.alignment = Alignment(horizontal="center", wrap_text=True)
+    for cc in range(1, col_last_hour + 1):
+        ws.cell(row=header_row, column=cc).fill = head_fill
+        ws.cell(row=header_row, column=cc).border = border
+
+    cur_row = header_row + 1
+
+    def write_section(title: str, rows_list, section_key: str, groups=None):
+        nonlocal cur_row
+        # Section heading row spans whole grid
+        c = ws.cell(row=cur_row, column=col_desc, value=title)
+        c.font = Font(bold=True, size=12, color="1E3A8A")
+        cur_row += 1
+
+        body_first = cur_row
+
+        if groups:
+            for group_name, group_rows in groups:
+                gc = ws.cell(row=cur_row, column=col_desc, value=group_name)
+                gc.font = Font(bold=True, color="4C1D95")
+                gc.fill = grp_fill
+                for cc in range(1, col_last_hour + 1):
+                    ws.cell(row=cur_row, column=cc).fill = grp_fill
+                cur_row += 1
+                for r in group_rows:
+                    _write_data_row(section_key, r)
+        else:
+            for r in (rows_list or []):
+                _write_data_row(section_key, r)
+
+        body_last = cur_row - 1
+        if body_last >= body_first:
+            # Footer column totals (only when there is at least one data row)
+            ws.cell(row=cur_row, column=col_desc, value=f"{title} Total").font = Font(bold=True)
+            ws.cell(row=cur_row, column=col_cum, value=f"=SUM({get_column_letter(col_cum)}{body_first}:{get_column_letter(col_cum)}{body_last})")
+            for i in range(n_hours):
+                col_letter = get_column_letter(col_first_hour + i)
+                ws.cell(row=cur_row, column=col_first_hour + i, value=f"=SUM({col_letter}{body_first}:{col_letter}{body_last})")
+            for cc in range(1, col_last_hour + 1):
+                ws.cell(row=cur_row, column=cc).fill = total_fill
+                ws.cell(row=cur_row, column=cc).font = Font(bold=True)
+                ws.cell(row=cur_row, column=cc).border = border
+            cur_row += 1
+        cur_row += 1  # blank spacer
+
+    def _write_data_row(section_key: str, r):
+        nonlocal cur_row
+        ws.cell(row=cur_row, column=col_marker, value=f"{section_key}:{r.key}")
+        ws.cell(row=cur_row, column=col_desc, value=r.label)
+        # Cumulative — pre-fill existing value (no formula here so user can override)
+        existing_cum = cells[section_key][r.key].get(dpr.CUMULATIVE_KEY) or 0
+        cum_cell = ws.cell(row=cur_row, column=col_cum, value=(existing_cum if existing_cum else None))
+        cum_cell.fill = cum_fill
+        # Hour cells — pre-fill existing values
+        for i, (hkey, _label) in enumerate(hour_slots):
+            v = cells[section_key][r.key].get(hkey) or 0
+            ws.cell(row=cur_row, column=col_first_hour + i, value=(v if v else None))
+        for cc in range(1, col_last_hour + 1):
+            ws.cell(row=cur_row, column=cc).border = border
+        cur_row += 1
+
+    write_section("1 · Production", production_rows, "production")
+    write_section("2 · Rejection", None, "rejection", groups=rejection_groups)
+    write_section("3 · Rework", rework_rows, "rework")
+
+    # Column widths
+    ws.column_dimensions[get_column_letter(col_marker)].hidden = True
+    ws.column_dimensions[get_column_letter(col_desc)].width = 32
+    ws.column_dimensions[get_column_letter(col_cum)].width = 12
+    for i in range(n_hours):
+        ws.column_dimensions[get_column_letter(col_first_hour + i)].width = 12
+    ws.row_dimensions[header_row].height = 32
+
+    # Idle events sheet
+    ws2 = wb.create_sheet("Idle Time")
+    headers = ["Machine", "Description", "From (HH:MM)", "To (HH:MM)", "Time Loss (min)", "Attended By", "Remarks"]
+    for i, h in enumerate(headers, start=1):
+        c = ws2.cell(row=1, column=i, value=h)
+        c.font = Font(bold=True)
+        c.fill = head_fill
+        c.border = border
+    for idx, (machine, desc, frm, to, loss, attended, remarks) in enumerate(idle_events_snapshot, start=2):
+        ws2.cell(row=idx, column=1, value=machine)
+        ws2.cell(row=idx, column=2, value=desc)
+        ws2.cell(row=idx, column=3, value=frm)
+        ws2.cell(row=idx, column=4, value=to)
+        ws2.cell(row=idx, column=5, value=loss)
+        ws2.cell(row=idx, column=6, value=attended)
+        ws2.cell(row=idx, column=7, value=remarks)
+    # Time-loss formula hint for new rows (rows 2..50)
+    for r in range(2, 51):
+        cell = ws2.cell(row=r, column=5)
+        if cell.value in (None, 0):
+            cell.value = f'=IF(AND(ISNUMBER(--C{r}),ISNUMBER(--D{r})),(MOD((TIMEVALUE(D{r})-TIMEVALUE(C{r}))+1,1))*1440,"")'
+    for col, w in zip("ABCDEFG", [16, 32, 14, 14, 16, 18, 32]):
+        ws2.column_dimensions[col].width = w
+
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    fname = f"dpr_{report.report_date}_{report.shift}_L{report.line}_template.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@app.post("/production/daily-report/{report_id}/import")
+async def dpr_import(report_id: int, file: UploadFile = File(...)):
+    """Parse an uploaded DPR Excel and replace the report's cells + idle
+    events. Validates that the workbook has the marker column we wrote in
+    the template, then reads computed values (data_only=True) so any
+    user-typed formulas resolve to numbers."""
+    from io import BytesIO
+    from openpyxl import load_workbook
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "uploaded file is empty")
+    try:
+        wb = load_workbook(BytesIO(raw), data_only=True)
+    except Exception as e:
+        raise HTTPException(400, f"could not read Excel: {e}")
+
+    if "DPR" not in wb.sheetnames:
+        raise HTTPException(400, "missing 'DPR' sheet — please use the downloaded template")
+    ws = wb["DPR"]
+
+    with _session() as session:
+        report = session.get(DailyProductionReport, report_id)
+        if not report:
+            raise HTTPException(404, "report not found")
+        hour_slots = dpr.load_hour_slots(report.hour_slots_json, report.shift)
+        n_hours = len(hour_slots)
+        prod_rows, rej_groups, rw_rows = _dpr_rows_for_report(session, report)
+        valid_keys = {
+            "production": {r.key for r in prod_rows},
+            "rejection": {r.key for _, rows in rej_groups for r in rows},
+            "rework": {r.key for r in rw_rows},
+        }
+
+        col_marker, col_cum, col_first_hour = 1, 3, 4
+
+        # Find header row by locating "_marker" in column A
+        header_row = None
+        for row in range(1, 25):
+            v = ws.cell(row=row, column=col_marker).value
+            if isinstance(v, str) and v.strip() == "_marker":
+                header_row = row
+                break
+        if header_row is None:
+            raise HTTPException(
+                400,
+                "could not find marker column — please use the downloaded template (do not delete column A or the header row)",
+            )
+
+        # Collect (section, row_key, row_index) pairs
+        parsed: list[tuple[str, str, int]] = []
+        max_row = ws.max_row or 0
+        for r in range(header_row + 1, max_row + 1):
+            mv = ws.cell(row=r, column=col_marker).value
+            if not isinstance(mv, str) or ":" not in mv:
+                continue
+            section, row_key = mv.split(":", 1)
+            section = section.strip()
+            row_key = row_key.strip()
+            if section not in valid_keys or row_key not in valid_keys[section]:
+                continue
+            parsed.append((section, row_key, r))
+
+        if not parsed:
+            raise HTTPException(400, "no recognised data rows — make sure the marker column was preserved")
+
+        def _num(v):
+            if v in (None, ""):
+                return 0.0
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return 0.0
+
+        # Replace all cells atomically
+        for existing in list(report.cells):
+            session.delete(existing)
+        session.flush()
+
+        rows_imported = 0
+        for section, row_key, r in parsed:
+            cum = _num(ws.cell(row=r, column=col_cum).value)
+            if cum:
+                session.add(DPRHourlyCell(
+                    report_id=report.id, section=section, row_key=row_key,
+                    hour_key=dpr.CUMULATIVE_KEY, value=cum,
+                ))
+                rows_imported += 1
+            for i, (hkey, _label) in enumerate(hour_slots):
+                v = _num(ws.cell(row=r, column=col_first_hour + i).value)
+                if v:
+                    session.add(DPRHourlyCell(
+                        report_id=report.id, section=section, row_key=row_key,
+                        hour_key=hkey, value=v,
+                    ))
+                    rows_imported += 1
+
+        # Idle Time sheet (optional) — replace if present
+        if "Idle Time" in wb.sheetnames:
+            ws2 = wb["Idle Time"]
+            for existing in list(report.idle_events):
+                session.delete(existing)
+            session.flush()
+            ordinal = 0
+            for r in range(2, (ws2.max_row or 1) + 1):
+                machine = ws2.cell(row=r, column=1).value
+                desc = ws2.cell(row=r, column=2).value
+                if not (machine or desc):
+                    continue
+                session.add(DPRIdleEvent(
+                    report_id=report.id,
+                    ordinal=ordinal,
+                    machine=str(machine).strip() if machine else None,
+                    description=str(desc).strip() if desc else None,
+                    from_time=str(ws2.cell(row=r, column=3).value).strip() if ws2.cell(row=r, column=3).value else None,
+                    to_time=str(ws2.cell(row=r, column=4).value).strip() if ws2.cell(row=r, column=4).value else None,
+                    time_loss_min=_num(ws2.cell(row=r, column=5).value),
+                    attended_by=str(ws2.cell(row=r, column=6).value).strip() if ws2.cell(row=r, column=6).value else None,
+                    remarks=str(ws2.cell(row=r, column=7).value).strip() if ws2.cell(row=r, column=7).value else None,
+                ))
+                ordinal += 1
+
+        report.updated_at = datetime.utcnow()
+        session.commit()
+
+    return RedirectResponse(f"/production/daily-report/{report_id}/edit", status_code=303)
 
 
 @app.get("/production/daily-report/{report_id}", response_class=HTMLResponse)
@@ -2128,6 +3133,33 @@ def dpr_summary(request: Request, report_id: int):
         cells = _dpr_load_cells(session, report, hour_slots, sections_rows)
         idle_events = sorted(report.idle_events, key=lambda e: e.ordinal)
         totals = _dpr_compute_totals(cells, hour_slots, production_rows)
+        hour_models = _dpr_load_hour_models(report)
+        hour_model_chain = _dpr_resolve_hour_model_chain(hour_models, report.model or "", hour_slots)
+        production_by_model = _dpr_production_by_model(
+            cells, hour_slots, production_rows, hour_models, report.model or ""
+        )
+        # Distinct models in the order they first appear during the shift,
+        # used for the paper-meta "Model" cell ("Renz3b | Renz5").
+        seen_models: list[str] = []
+        for _k, _l in hour_slots:
+            m = hour_model_chain.get(_k, "")
+            if m and m not in seen_models:
+                seen_models.append(m)
+        if not seen_models and (report.model or "").strip():
+            seen_models = [report.model.strip()]
+        models_label = " | ".join(seen_models) if seen_models else (report.model or "—")
+        default_doc_no = _dpr_doc_no_for_display(session, report)
+        rd = report.report_date
+        if isinstance(rd, str):
+            from datetime import date as _date
+            try:
+                rd = _date.fromisoformat(rd)
+            except ValueError:
+                rd = _date.today()
+        default_rev_date = rd.strftime("%d/%m/%Y")
+        company_logo = _logo_for_company(report.company_name or "")
+        import re as _re
+        company_clean = _re.sub(r"\s*\([^)]*\)\s*$", "", report.company_name or "").strip()
     return templates.TemplateResponse(
         request,
         "production_summary.html",
@@ -2141,17 +3173,55 @@ def dpr_summary(request: Request, report_id: int):
             "cells": cells,
             "idle_events": idle_events,
             "totals": totals,
+            "hour_models": hour_models,
+            "hour_model_chain": hour_model_chain,
+            "models_label": models_label,
+            "production_by_model": production_by_model,
+            "default_doc_no": default_doc_no,
+            "default_rev_date": default_rev_date,
+            "company_logo": company_logo,
+            "company_clean": company_clean,
         },
     )
 
 
+@app.post("/production/daily-report/delete-all-drafts")
+async def dpr_delete_all_drafts(date: str | None = Form(None)):
+    """Bulk-delete every draft DPR under the configured Tally company. If
+    ``date`` is supplied (matching the Recent reports date filter), the bulk
+    delete is scoped to that date so the UI action matches what the user is
+    looking at. Submitted reports are never touched."""
+    company = _tally_company_name()
+    with _session() as session:
+        q = select(DailyProductionReport).where(
+            DailyProductionReport.company_name == company,
+            DailyProductionReport.status == "draft",
+        )
+        if date:
+            q = q.where(DailyProductionReport.report_date == date)
+        drafts = list(session.scalars(q))
+        for r in drafts:
+            session.delete(r)
+        session.commit()
+    from urllib.parse import urlencode
+    qs = urlencode({"date": date} if date else {})
+    target = "/production/daily-report" + (f"?{qs}" if qs else "")
+    return RedirectResponse(target, status_code=303)
+
+
 @app.post("/production/daily-report/{report_id}/delete")
 async def dpr_delete(report_id: int):
+    """Delete a Daily Production Report. Only drafts can be deleted — once a
+    report is submitted, the row stays around so the published voucher can be
+    reconciled against it."""
     with _session() as session:
         report = session.get(DailyProductionReport, report_id)
-        if report:
-            session.delete(report)
-            session.commit()
+        if report is None:
+            return RedirectResponse("/production/daily-report", status_code=303)
+        if (report.status or "").strip().lower() != "draft":
+            raise HTTPException(400, "Only draft reports can be deleted.")
+        session.delete(report)
+        session.commit()
     return RedirectResponse("/production/daily-report", status_code=303)
 
 
@@ -2266,6 +3336,854 @@ def _pp_load(
     for row in session.scalars(q):
         out.setdefault(row.section, []).append(row)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Production model specs — physical dimensions used for SJ-LINE scrap weight.
+# ---------------------------------------------------------------------------
+
+def _parse_spec_value(raw: str | None) -> float:
+    if raw is None or str(raw).strip() == "":
+        return 0.0
+    try:
+        return float(str(raw).strip())
+    except ValueError:
+        raise HTTPException(400, f"invalid number: {raw!r}")
+
+
+_HOLE_HEADER_RE = __import__("re").compile(r"^\s*(\d+(?:\.\d+)?)\s*mm\s*$", __import__("re").IGNORECASE)
+
+
+def _detect_header_row(rows: list[list[str]]) -> int:
+    """Find the row index whose cells include 'model' and 'length' headers.
+
+    Handles workbooks with merged title rows above the real header (e.g.
+    "DRILL BITS AND SEGMENTS" spanning the size columns). Falls back to row 0
+    so the existing flat-CSV path keeps working."""
+    for i, row in enumerate(rows[:8]):
+        joined = " | ".join(str(c or "").strip().lower() for c in row)
+        if "model" in joined and ("length" in joined or "l (mm)" in joined):
+            return i
+    return 0
+
+
+def _spec_columns_from_header(header: list[str]) -> tuple[dict[str, int], list[tuple[int, float]]]:
+    """Return ((named-column index map), [(col_index, hole_diameter_mm), ...]).
+
+    The named columns capture the base spec fields (model + L/W/thickness +
+    optional notes). The list of hole-columns captures every header that
+    matches `<number> MM`, with the parsed diameter — these become rows in
+    ProductionModelHole when their cell value is > 0."""
+    norm = [str(h or "").strip().lower() for h in header]
+    def find(*needles: str) -> int | None:
+        for i, h in enumerate(norm):
+            if all(n in h for n in needles):
+                return i
+        return None
+    cols: dict[str, int | None] = {
+        "customer": find("customer") if find("customer") is not None else find("brand"),
+        "model": find("model"),
+        "length": find("length") if find("length") is not None else find("l", "mm"),
+        "width": find("width") if find("width") is not None else find("w", "mm"),
+        "thickness": find("thick"),
+        "notes": find("notes") if find("notes") is not None else find("remark"),
+        "blank_price": find("blank", "price"),
+        "drilled_price": find("drilled", "price"),
+        "printed_price": find("printed", "price"),
+    }
+    missing = [k for k in ("model", "length", "width", "thickness") if cols[k] is None]
+    if missing:
+        raise HTTPException(
+            400,
+            f"upload missing required columns: {', '.join(missing)}. "
+            f"Got headers: {header!r}",
+        )
+    hole_cols: list[tuple[int, float]] = []
+    skip_idx = {v for v in cols.values() if v is not None}
+    for i, raw in enumerate(header):
+        if i in skip_idx:
+            continue
+        m = _HOLE_HEADER_RE.match(str(raw or ""))
+        if m:
+            try:
+                hole_cols.append((i, float(m.group(1))))
+            except ValueError:
+                continue
+    return ({k: v for k, v in cols.items() if v is not None}, hole_cols)
+
+
+def _tally_company_name() -> str:
+    """The Tally company whose stock-group / stock-item master we cross-check
+    model specs against. Driven by ``TALLY_COMPANY_NAME`` in the env, with a
+    sensible default for the current shop."""
+    import os as _os
+    return (_os.getenv("TALLY_COMPANY_NAME") or "Avinash Appliances Private Limited (April 26 - March 27)").strip()
+
+
+_BLANK_GLASS_PREFIX = "BLANK GLASS - "
+_DRILLED_GLASS_PREFIX = "DRILLED GLASS - "
+
+
+def _model_stock_presence(session: Session) -> tuple[set[str], set[str]]:
+    """Scan Tally's stock items under ``TALLY_COMPANY_NAME`` for entries
+    named ``BLANK GLASS - <model>`` and ``DRILLED GLASS - <model>``. Returns
+    two sets of bare model names (uppercased for case-insensitive matching):
+    one for the BLANK side, one for the DRILLED side."""
+    company = _tally_company_name()
+    if not company:
+        return set(), set()
+    rows = session.scalars(
+        select(StockItem.name).where(StockItem.company_name == company)
+    )
+    blank_prefix_lower = _BLANK_GLASS_PREFIX.lower()
+    drilled_prefix_lower = _DRILLED_GLASS_PREFIX.lower()
+    blank: set[str] = set()
+    drilled: set[str] = set()
+    for name in rows:
+        if not name:
+            continue
+        s = str(name).strip()
+        low = s.lower()
+        if low.startswith(blank_prefix_lower):
+            tail = s[len(_BLANK_GLASS_PREFIX):].strip().upper()
+            if tail:
+                blank.add(tail)
+        elif low.startswith(drilled_prefix_lower):
+            tail = s[len(_DRILLED_GLASS_PREFIX):].strip().upper()
+            if tail:
+                drilled.add(tail)
+    return blank, drilled
+
+
+def _model_missing_status(
+    session: Session, models: list[str]
+) -> dict[str, str]:
+    """Per-model readiness against Tally's BLANK / DRILLED stock items
+    *and* the per-spec price columns. A model is ``ok`` only when both
+    stock items exist AND both blank_price + drilled_price are populated;
+    anything else maps to a tag the UI can render.
+
+    Status values (precedence: stock-missing first, then price-missing):
+      - ``ok``               — both items exist AND both prices set
+      - ``blank_missing``    — DRILLED found, BLANK missing             → BG-NF
+      - ``drilled_missing``  — BLANK found, DRILLED missing             → DG-NF
+      - ``both_missing``     — neither stock item found                  → red bg, no tag
+      - ``no_price``         — both stock items found, but a price is 0/None → NP
+    """
+    blank_set, drilled_set = _model_stock_presence(session)
+    # Price lookup keyed by uppercased model name for case-insensitive match.
+    price_rows = session.execute(
+        select(
+            ProductionModelSpec.model,
+            ProductionModelSpec.blank_price,
+            ProductionModelSpec.drilled_price,
+        )
+    ).all()
+    prices: dict[str, tuple[float | None, float | None]] = {
+        (m or "").strip().upper(): (bp, dp) for m, bp, dp in price_rows
+    }
+    out: dict[str, str] = {}
+    for m in models:
+        key = (m or "").strip().upper()
+        has_b = key in blank_set
+        has_d = key in drilled_set
+        if not has_b and not has_d:
+            out[m] = "both_missing"
+        elif not has_b:
+            out[m] = "blank_missing"
+        elif not has_d:
+            out[m] = "drilled_missing"
+        else:
+            bp, dp = prices.get(key, (None, None))
+            if not bp or not dp:
+                out[m] = "no_price"
+            else:
+                out[m] = "ok"
+    return out
+
+
+@app.get("/production/models", response_class=HTMLResponse)
+def model_specs_index(request: Request, company: str | None = None):
+    """Flat grid of every model across every company.
+
+    The `company` query-param is still accepted as the default target for
+    the upload form, but the grid itself is no longer filtered — Customer
+    is rendered as the first column and the user can narrow it via the
+    Excel-style filter dropdown on that column header."""
+    from sqlalchemy.orm import selectinload
+    with _session() as session:
+        companies = _list_companies(session) or sorted(
+            c for c in session.scalars(select(Voucher.company_name).distinct()) if c
+        )
+        upload_company = _pp_resolve_company(session, company)
+        specs = list(session.scalars(
+            select(ProductionModelSpec)
+            .options(selectinload(ProductionModelSpec.holes))
+            .order_by(ProductionModelSpec.company_name, ProductionModelSpec.model)
+        ))
+        model_status = _model_missing_status(session, [s.model for s in specs])
+        last_sync_at = max((s.updated_at for s in specs), default=None)
+    diameter_set: set[float] = set()
+    counts: dict[int, dict[float, int]] = {}
+    for s in specs:
+        per: dict[float, int] = {}
+        for h in s.holes:
+            diameter_set.add(h.diameter_mm)
+            per[h.diameter_mm] = h.count
+        counts[s.id] = per
+    all_diameters = sorted(diameter_set)
+    customers = sorted({s.company_name for s in specs if s.company_name})
+    return templates.TemplateResponse(
+        request,
+        "model_specs.html",
+        {
+            "companies": companies,
+            "customers": customers,
+            "upload_company": upload_company,
+            "specs": specs,
+            "all_diameters": all_diameters,
+            "counts": counts,
+            "model_status": model_status,
+            "tally_company_name": _tally_company_name(),
+            "last_sync_at": last_sync_at,
+            "onedrive_configured": onedrive_client.is_configured(),
+            "onedrive_signed_in": onedrive_client.has_token(),
+            "ms_worksheet_default": onedrive_client.default_worksheet_name(),
+            "ms_table_default": onedrive_client.default_table_name(),
+            "edit_unlocked": _models_edit_unlocked(request),
+            "edit_lock_enabled": bool((__import__("os").getenv("MODEL_SPECS_EDIT_PASSWORD") or "").strip()),
+        },
+    )
+
+
+def _models_edit_password() -> str:
+    import os as _os
+    return (_os.getenv("MODEL_SPECS_EDIT_PASSWORD") or "").strip()
+
+
+def _models_edit_unlocked(request: Request) -> bool:
+    """Legacy session-cookie check, retained so the page-level read can still
+    show/hide the (now obsolete) Enable-Edit pill. Action-level enforcement
+    happens in ``_check_form_password`` per save/delete request."""
+    pw = _models_edit_password()
+    if not pw:
+        return True
+    return request.cookies.get("models_edit") == "1"
+
+
+def _check_form_password(form) -> bool:
+    """Strict per-action gate: the password posted with the form must match
+    ``MODEL_SPECS_EDIT_PASSWORD``. If the env var is unset, the lock is off."""
+    expected = _models_edit_password()
+    if not expected:
+        return True
+    supplied = (form.get("edit_password") or "").strip()
+    return supplied == expected
+
+
+@app.post("/production/models/verify-password")
+async def model_specs_verify_password(request: Request):
+    """JSON endpoint used by the Model Specs page to verify the password
+    before opening Add / Edit / Delete dialogs. Returns ``{"ok": bool}``."""
+    form = await request.form()
+    expected = _models_edit_password()
+    supplied = (form.get("password") or "").strip()
+    if not expected:
+        return JSONResponse({"ok": True, "lock_disabled": True})
+    return JSONResponse({"ok": supplied == expected})
+
+
+@app.post("/production/models/unlock")
+async def model_specs_unlock(request: Request):
+    import os as _os
+    form = await request.form()
+    pw_supplied = (form.get("password") or "").strip()
+    pw_expected = (_os.getenv("MODEL_SPECS_EDIT_PASSWORD") or "").strip()
+    company = (form.get("company") or "").strip()
+    from urllib.parse import urlencode
+    if not pw_expected:
+        # No password configured — nothing to unlock; redirect with note.
+        qs = urlencode({"company": company, "msg": "Edit lock is disabled (no MODEL_SPECS_EDIT_PASSWORD set)."})
+        return RedirectResponse(f"/production/models?{qs}", status_code=303)
+    if pw_supplied != pw_expected:
+        qs = urlencode({"company": company, "msg": "Wrong password."})
+        return RedirectResponse(f"/production/models?{qs}", status_code=303)
+    qs = urlencode({"company": company, "msg": "Editing enabled."})
+    resp = RedirectResponse(f"/production/models?{qs}", status_code=303)
+    # Session cookie (no expires/max-age) — cleared when browser closes.
+    resp.set_cookie("models_edit", "1", httponly=True, samesite="lax")
+    return resp
+
+
+@app.post("/production/models/lock")
+async def model_specs_lock(request: Request):
+    form = await request.form()
+    company = (form.get("company") or "").strip()
+    from urllib.parse import urlencode
+    qs = urlencode({"company": company, "msg": "Editing locked."})
+    resp = RedirectResponse(f"/production/models?{qs}", status_code=303)
+    resp.delete_cookie("models_edit")
+    return resp
+
+
+@app.post("/production/models/save")
+async def model_specs_save(request: Request):
+    """Upsert one model's base spec. Optional ``hole_diameter_mm`` /
+    ``hole_count`` form arrays let the same form add multiple hole rows in
+    one POST. The form may carry ``spec_id`` to identify an existing row
+    for in-place edit (Customer / Model rename); without it, lookup falls
+    back to (company, model) and creates a new spec when no match exists.
+    Holes are wiped and re-written when ``replace_holes=1`` is present."""
+    form = await request.form()
+    if not _check_form_password(form):
+        raise HTTPException(403, "Wrong or missing password — model specs edit is locked.")
+    company = (form.get("company") or "").strip()
+    model = (form.get("model") or "").strip()
+    if not company or not model:
+        raise HTTPException(400, "company and model are required")
+    raw_spec_id = (form.get("spec_id") or "").strip()
+    spec_id = int(raw_spec_id) if raw_spec_id.isdigit() else None
+    diameters = form.getlist("hole_diameter_mm")
+    counts = form.getlist("hole_count")
+    replace_holes = form.get("replace_holes") in ("1", "true", "on")
+    with _session() as session:
+        spec = None
+        if spec_id is not None:
+            spec = session.get(ProductionModelSpec, spec_id)
+        if spec is None:
+            spec = session.scalars(
+                select(ProductionModelSpec).where(
+                    ProductionModelSpec.company_name == company,
+                    ProductionModelSpec.model == model,
+                )
+            ).one_or_none()
+        is_new = spec is None
+        if is_new:
+            # Block creating a second row that collides with an existing one.
+            clash = session.scalars(
+                select(ProductionModelSpec).where(
+                    ProductionModelSpec.company_name == company,
+                    ProductionModelSpec.model == model,
+                )
+            ).one_or_none()
+            if clash is not None:
+                from urllib.parse import urlencode
+                qs = urlencode({"company": company, "msg": f"A spec for {company} / {model} already exists — edit that row instead."})
+                return RedirectResponse(f"/production/models?{qs}", status_code=303)
+            spec = ProductionModelSpec(company_name=company, model=model, length_mm=0, width_mm=0, thickness_mm=0)
+            session.add(spec)
+        else:
+            # Allow Customer / Model rename, but block renaming into an existing pair.
+            if (spec.company_name, spec.model) != (company, model):
+                clash = session.scalars(
+                    select(ProductionModelSpec).where(
+                        ProductionModelSpec.company_name == company,
+                        ProductionModelSpec.model == model,
+                        ProductionModelSpec.id != spec.id,
+                    )
+                ).one_or_none()
+                if clash is not None:
+                    from urllib.parse import urlencode
+                    qs = urlencode({"company": company, "msg": f"Cannot rename to {company} / {model} — another spec already uses that pair."})
+                    return RedirectResponse(f"/production/models?{qs}", status_code=303)
+            spec.company_name = company
+            spec.model = model
+        spec.length_mm = _parse_spec_value(form.get("length_mm"))
+        spec.width_mm = _parse_spec_value(form.get("width_mm"))
+        spec.thickness_mm = _parse_spec_value(form.get("thickness_mm"))
+        spec.notes = (form.get("notes") or "").strip() or None
+        session.flush()  # ensure spec.id
+
+        if is_new or replace_holes:
+            for h in list(spec.holes):
+                session.delete(h)
+            session.flush()
+        # Merge inline hole rows (from the Add form's + button), summing
+        # duplicates so the same diameter twice doesn't violate the unique
+        # constraint.
+        merged: dict[float, int] = {}
+        for d_raw, c_raw in zip(diameters, counts):
+            try:
+                d = float(str(d_raw).strip())
+                c = int(float(str(c_raw).strip()))
+            except (TypeError, ValueError):
+                continue
+            if d <= 0 or c <= 0:
+                continue
+            merged[d] = merged.get(d, 0) + c
+        for d, c in merged.items():
+            existing = session.scalars(
+                select(ProductionModelHole).where(
+                    ProductionModelHole.spec_id == spec.id,
+                    ProductionModelHole.diameter_mm == d,
+                )
+            ).one_or_none()
+            if existing is None:
+                session.add(ProductionModelHole(spec_id=spec.id, diameter_mm=d, count=c))
+            else:
+                existing.count = c
+        session.commit()
+    from urllib.parse import urlencode
+    return RedirectResponse(f"/production/models?{urlencode({'company': company})}", status_code=303)
+
+
+@app.post("/production/models/holes/save")
+async def model_holes_save(request: Request):
+    form = await request.form()
+    if not _check_form_password(form):
+        raise HTTPException(403, "Wrong or missing password — model specs edit is locked.")
+    spec_id = int(form.get("spec_id") or 0)
+    company = (form.get("company") or "").strip()
+    diameter = _parse_spec_value(form.get("diameter_mm"))
+    count = int(_parse_spec_value(form.get("count")))
+    if spec_id <= 0 or diameter <= 0 or count <= 0:
+        raise HTTPException(400, "spec_id, diameter_mm > 0 and count > 0 are required")
+    with _session() as session:
+        existing = session.scalars(
+            select(ProductionModelHole).where(
+                ProductionModelHole.spec_id == spec_id,
+                ProductionModelHole.diameter_mm == diameter,
+            )
+        ).one_or_none()
+        if existing is None:
+            session.add(ProductionModelHole(spec_id=spec_id, diameter_mm=diameter, count=count))
+        else:
+            existing.count = count
+        session.commit()
+    from urllib.parse import urlencode
+    return RedirectResponse(f"/production/models?{urlencode({'company': company})}", status_code=303)
+
+
+@app.post("/production/models/holes/delete")
+async def model_holes_delete(request: Request):
+    form = await request.form()
+    if not _check_form_password(form):
+        raise HTTPException(403, "Wrong or missing password — model specs edit is locked.")
+    hole_id = int(form.get("hole_id") or 0)
+    company = (form.get("company") or "").strip()
+    with _session() as session:
+        h = session.get(ProductionModelHole, hole_id)
+        if h is not None:
+            session.delete(h)
+            session.commit()
+    from urllib.parse import urlencode
+    return RedirectResponse(f"/production/models?{urlencode({'company': company})}", status_code=303)
+
+
+@app.post("/production/models/delete")
+async def model_specs_delete(request: Request):
+    form = await request.form()
+    if not _check_form_password(form):
+        raise HTTPException(403, "Wrong or missing password — model specs edit is locked.")
+    spec_id = int(form.get("spec_id") or 0)
+    company = (form.get("company") or "").strip()
+    with _session() as session:
+        spec = session.get(ProductionModelSpec, spec_id)
+        if spec is not None:
+            session.delete(spec)
+            session.commit()
+    from urllib.parse import urlencode
+    return RedirectResponse(f"/production/models?{urlencode({'company': company})}", status_code=303)
+
+
+@app.post("/production/models/upload")
+async def model_specs_upload(
+    request: Request,
+    worksheet_name: str = Form(""),
+    table_name: str = Form(""),
+    file: UploadFile = File(...),
+):
+    """Bulk-upsert specs from an .xlsx or .csv export of the OneDrive sheet.
+
+    Optional ``worksheet_name`` picks a specific sheet (default: the active
+    sheet). Optional ``table_name`` (xlsx only) restricts parsing to a named
+    Excel table on that sheet, so anything outside the table — title rows,
+    summary blocks — is ignored. The sheet's "Customer" column is required
+    per-row; rows without one are skipped and reported as errors."""
+    raw = await file.read()
+    name = (file.filename or "").lower()
+    ws_arg = worksheet_name.strip()
+    tbl_arg = table_name.strip()
+    rows: list[list[str]]
+    if name.endswith(".csv"):
+        import csv, io
+        text = raw.decode("utf-8-sig", errors="replace")
+        rows = list(csv.reader(io.StringIO(text)))
+    elif name.endswith(".xlsx") or name.endswith(".xls"):
+        try:
+            from openpyxl import load_workbook  # type: ignore
+            from openpyxl.utils import range_boundaries  # type: ignore
+        except ImportError:
+            raise HTTPException(500, "openpyxl is not installed; install it or upload a CSV instead")
+        import io
+        # ``read_only=True`` doesn't expose worksheet.tables, so we open in
+        # normal mode when a table_name is given.
+        wb = load_workbook(filename=io.BytesIO(raw), data_only=True, read_only=not bool(tbl_arg))
+        if ws_arg:
+            if ws_arg not in wb.sheetnames:
+                raise HTTPException(400, f"worksheet {ws_arg!r} not found in workbook (sheets: {wb.sheetnames})")
+            ws = wb[ws_arg]
+        else:
+            ws = wb.active
+        if tbl_arg:
+            tables = getattr(ws, "tables", {}) or {}
+            if tbl_arg not in tables:
+                raise HTTPException(400, f"table {tbl_arg!r} not found on sheet {ws.title!r} (tables: {list(tables.keys())})")
+            ref = tables[tbl_arg].ref if hasattr(tables[tbl_arg], "ref") else tables[tbl_arg]
+            min_col, min_row, max_col, max_row = range_boundaries(ref)
+            rows = []
+            for r in ws.iter_rows(min_row=min_row, max_row=max_row, min_col=min_col, max_col=max_col, values_only=True):
+                rows.append([("" if c is None else str(c)) for c in r])
+        else:
+            rows = [[("" if c is None else str(c)) for c in r] for r in ws.iter_rows(values_only=True)]
+    else:
+        raise HTTPException(400, "upload must be .xlsx or .csv")
+    counts = _apply_master_data_rows(rows)
+    msg_parts = [f"inserted={counts['inserted']}", f"updated={counts['updated']}", f"holes={counts['holes_written']}"]
+    if counts["skipped"]:
+        msg_parts.append(f"skipped={counts['skipped']}")
+    if counts["errors"]:
+        msg_parts.append(f"errors={len(counts['errors'])}: {counts['errors'][0]!r}")
+    from urllib.parse import urlencode
+    qs = urlencode({"msg": " ".join(msg_parts)})
+    return RedirectResponse(f"/production/models?{qs}", status_code=303)
+
+
+def _apply_master_data_rows(rows: list[list[str]]) -> dict:
+    """Upsert ProductionModelSpec rows from a header+data matrix.
+
+    Used by both the manual xlsx/csv upload path and the OneDrive sync. Each
+    row must carry a Customer value — rows without one are skipped and
+    surfaced as errors so nothing slips through with a wrong owner."""
+    rows = [r for r in rows if any((c or "").strip() for c in r)]
+    if not rows:
+        raise HTTPException(400, "no data rows found")
+    header_idx = _detect_header_row(rows)
+    header = rows[header_idx]
+    data_rows = rows[header_idx + 1:]
+    cols, hole_cols = _spec_columns_from_header(header)
+    inserted = updated = skipped = holes_written = 0
+    errors: list[str] = []
+    with _session() as session:
+        for idx, row in enumerate(data_rows, start=header_idx + 2):
+            try:
+                model_idx = cols.get("model")
+                model = (row[model_idx] or "").strip() if model_idx is not None and len(row) > model_idx else ""
+                if not model:
+                    skipped += 1
+                    continue
+                def cell(key: str) -> str:
+                    i = cols.get(key)
+                    return row[i] if i is not None and i < len(row) else ""
+                length = _parse_spec_value(cell("length"))
+                width = _parse_spec_value(cell("width"))
+                thick = _parse_spec_value(cell("thickness"))
+                if length <= 0 or width <= 0 or thick <= 0:
+                    errors.append(f"row {idx}: missing length/width/thickness for {model}")
+                    continue
+                notes = (cell("notes") or "").strip() or None
+                def price(key: str) -> float | None:
+                    raw = (cell(key) or "").strip()
+                    if not raw:
+                        return None
+                    try:
+                        return float(raw.replace(",", ""))
+                    except ValueError:
+                        return None
+                blank_price = price("blank_price")
+                drilled_price = price("drilled_price")
+                printed_price = price("printed_price")
+                row_customer = (cell("customer") or "").strip()
+                if not row_customer:
+                    errors.append(f"row {idx}: missing Customer for model {model!r} — row skipped")
+                    skipped += 1
+                    continue
+                # Look up by model name globally — a model belongs to exactly
+                # one customer in this domain, so duplicates across customers
+                # shouldn't exist. If one is found, we update its customer too.
+                spec = session.scalars(
+                    select(ProductionModelSpec).where(ProductionModelSpec.model == model)
+                ).one_or_none()
+                if spec is None:
+                    spec = ProductionModelSpec(
+                        company_name=row_customer, model=model,
+                        length_mm=length, width_mm=width, thickness_mm=thick,
+                        blank_price=blank_price, drilled_price=drilled_price,
+                        printed_price=printed_price, notes=notes,
+                    )
+                    session.add(spec)
+                    session.flush()  # get spec.id
+                    inserted += 1
+                else:
+                    spec.company_name = row_customer
+                    spec.length_mm = length
+                    spec.width_mm = width
+                    spec.thickness_mm = thick
+                    spec.blank_price = blank_price
+                    spec.drilled_price = drilled_price
+                    spec.printed_price = printed_price
+                    if notes is not None:
+                        spec.notes = notes
+                    # Replace existing holes with the uploaded set so a column
+                    # going to 0 actually removes that diameter.
+                    for h in list(spec.holes):
+                        session.delete(h)
+                    session.flush()
+                    updated += 1
+                for col_i, diameter in hole_cols:
+                    raw_count = row[col_i] if col_i < len(row) else ""
+                    try:
+                        count_val = int(_parse_spec_value(raw_count))
+                    except HTTPException:
+                        count_val = 0
+                    if count_val > 0:
+                        session.add(ProductionModelHole(
+                            spec_id=spec.id, diameter_mm=diameter, count=count_val,
+                        ))
+                        holes_written += 1
+            except HTTPException:
+                raise
+            except Exception as exc:
+                errors.append(f"row {idx}: {type(exc).__name__}: {exc}")
+        session.commit()
+    return {
+        "inserted": inserted,
+        "updated": updated,
+        "skipped": skipped,
+        "holes_written": holes_written,
+        "errors": errors,
+    }
+
+
+@app.get("/oauth/microsoft/login")
+def oauth_ms_login():
+    if not onedrive_client.is_configured():
+        raise HTTPException(400, "Microsoft Graph env vars not set in .env (MS_CLIENT_ID / MS_TENANT_ID / MS_CLIENT_SECRET / MS_WORKBOOK_PATH)")
+    return RedirectResponse(onedrive_client.build_auth_url(), status_code=303)
+
+
+@app.get("/oauth/microsoft/callback")
+def oauth_ms_callback(code: str = "", state: str = "", error: str = "", error_description: str = ""):
+    if error:
+        raise HTTPException(400, f"Microsoft sign-in returned error: {error} — {error_description}")
+    if not code:
+        raise HTTPException(400, "missing authorization code")
+    try:
+        onedrive_client.exchange_code(code, state)
+    except onedrive_client.OneDriveError as exc:
+        raise HTTPException(400, str(exc))
+    return RedirectResponse("/production/models?msg=OneDrive+connected", status_code=303)
+
+
+@app.post("/oauth/microsoft/signout")
+def oauth_ms_signout():
+    onedrive_client.sign_out()
+    return RedirectResponse("/production/models?msg=Signed+out+of+OneDrive", status_code=303)
+
+
+@app.post("/production/models/sync")
+def model_specs_sync(
+    worksheet_name: str = Form(""),
+    table_name: str = Form(""),
+):
+    """Pull a named Excel table live from OneDrive and upsert the specs."""
+    if not onedrive_client.is_configured():
+        raise HTTPException(400, "Microsoft Graph env vars not set in .env")
+    if not onedrive_client.has_token():
+        return RedirectResponse("/oauth/microsoft/login", status_code=303)
+    try:
+        rows = onedrive_client.fetch_master_table_rows(
+            worksheet_name=worksheet_name or None,
+            table_name=table_name or None,
+        )
+    except onedrive_client.OneDriveError as exc:
+        from urllib.parse import urlencode
+        qs = urlencode({"msg": f"OneDrive sync failed: {exc}"})
+        return RedirectResponse(f"/production/models?{qs}", status_code=303)
+    counts = _apply_master_data_rows(rows)
+    msg_parts = [
+        "OneDrive sync:",
+        f"inserted={counts['inserted']}",
+        f"updated={counts['updated']}",
+        f"holes={counts['holes_written']}",
+    ]
+    if counts["skipped"]:
+        msg_parts.append(f"skipped={counts['skipped']}")
+    if counts["errors"]:
+        msg_parts.append(f"errors={len(counts['errors'])}: {counts['errors'][0]!r}")
+    from urllib.parse import urlencode
+    qs = urlencode({"msg": " ".join(msg_parts)})
+    return RedirectResponse(f"/production/models?{qs}", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# Consolidated daily SJ - LINE voucher publish flow.
+# ---------------------------------------------------------------------------
+
+def _ldvp_remote_id(company: str, report_date: str) -> str:
+    return f"sjline-{company}-{report_date}".replace(" ", "_")
+
+
+def _ldvp_latest(session: Session, company: str, report_date: str) -> LineDailyVoucherPost | None:
+    rows = list(session.scalars(
+        select(LineDailyVoucherPost)
+        .where(
+            LineDailyVoucherPost.company_name == company,
+            LineDailyVoucherPost.report_date == report_date,
+        )
+        .order_by(LineDailyVoucherPost.created_at.desc())
+    ))
+    return rows[0] if rows else None
+
+
+@app.get("/production/line-voucher", response_class=HTMLResponse)
+def line_publish_preview(
+    request: Request,
+    company: str,
+    date: str,
+    scrap_rate: float | None = None,
+):
+    """Preview-and-confirm page for the consolidated SJ - LINE voucher."""
+    rate = scrap_rate if scrap_rate is not None else line_voucher.DEFAULT_SCRAP_RATE
+    with _session() as session:
+        result = line_voucher.build_sj_line_voucher(
+            session, company, date,
+            scrap_rate=rate,
+            remote_id=_ldvp_remote_id(company, date),
+        )
+        latest = _ldvp_latest(session, company, date)
+    # Split entries for display in two columns matching the Tally SJ layout.
+    consume = [e for e in result.voucher["inventory_entries"] if e.get("direction") == "out"]
+    produce = [e for e in result.voucher["inventory_entries"] if e.get("direction") == "in"]
+    return templates.TemplateResponse(
+        request,
+        "line_publish.html",
+        {
+            "company": company,
+            "report_date": date,
+            "scrap_rate": rate,
+            "result": result,
+            "consume": consume,
+            "produce": produce,
+            "latest": latest,
+        },
+    )
+
+
+@app.post("/production/line-voucher")
+async def line_publish_submit(request: Request):
+    form = await request.form()
+    company = (form.get("company") or "").strip()
+    date_ = (form.get("date") or "").strip()
+    try:
+        rate = float(form.get("scrap_rate") or line_voucher.DEFAULT_SCRAP_RATE)
+    except ValueError:
+        raise HTTPException(400, "scrap_rate must be a number")
+    if not company or not date_:
+        raise HTTPException(400, "company and date are required")
+    force_repost = (form.get("force_repost") or "").strip() in ("1", "true", "on", "yes")
+    remote_id = _ldvp_remote_id(company, date_)
+    with _session() as session:
+        # Idempotency gate: if the SJ - LINE voucher for this (company, date)
+        # has already been posted to Tally, refuse to post a second time
+        # unless the user has explicitly opted into ``force_repost`` (which
+        # they only get from the "Force re-post" button after acknowledging
+        # they've deleted the prior voucher in Tally).
+        already_posted = session.scalars(
+            select(LineDailyVoucherPost).where(
+                LineDailyVoucherPost.company_name == company,
+                LineDailyVoucherPost.report_date == date_,
+                LineDailyVoucherPost.status == "posted",
+            )
+        ).first()
+        if already_posted is not None and not force_repost:
+            from urllib.parse import urlencode
+            qs = urlencode({
+                "company": company,
+                "date": date_,
+                "msg": (
+                    f"Voucher already posted on "
+                    f"{already_posted.posted_at.strftime('%Y-%m-%d %H:%M') if already_posted.posted_at else 'previously'} "
+                    f"(#{already_posted.tally_voucher_number or already_posted.tally_master_id}). "
+                    "Re-posting is blocked to avoid duplicate vouchers in Tally."
+                ),
+            })
+            return RedirectResponse(
+                f"/production/line-voucher?{qs}",
+                status_code=303,
+            )
+        result = line_voucher.build_sj_line_voucher(
+            session, company, date_, scrap_rate=rate, remote_id=remote_id,
+        )
+        if not result.voucher["inventory_entries"]:
+            raise HTTPException(400, "No production data to post for this date")
+        post = LineDailyVoucherPost(
+            company_name=company,
+            report_date=date_,
+            remote_id=f"{remote_id}-{int(datetime.utcnow().timestamp())}",
+            status="pending",
+            scrap_rate=rate,
+        )
+        session.add(post)
+        session.commit()
+        post_id = post.id
+
+        try:
+            client = _tally_client()
+            api_result = client.import_voucher(company, result.voucher, dry_run=False)
+        except Exception as exc:
+            post.status = "failed"
+            post.tally_error = f"{type(exc).__name__}: {exc}"
+            session.commit()
+            from urllib.parse import urlencode
+            return RedirectResponse(
+                f"/production/line-voucher?{urlencode({'company': company, 'date': date_})}",
+                status_code=303,
+            )
+
+        if api_result.get("ok"):
+            post.status = "posted"
+            post.posted_at = datetime.utcnow()
+            vch_id = api_result.get("last_vch_id")
+            post.tally_master_id = str(vch_id) if vch_id is not None else None
+            vch_no = None
+            if vch_id is not None:
+                try:
+                    vch_no = client.fetch_voucher_number_by_master_id(company, vch_id)
+                except Exception:
+                    vch_no = None
+            post.tally_voucher_number = vch_no or (str(vch_id) if vch_id is not None else None)
+            # Mark every DPR row that contributed to this day's voucher as
+            # ``submitted`` so it locks against further edits and so the
+            # Recent reports list distinguishes posted-to-Tally from saved.
+            now = datetime.utcnow()
+            for r in session.scalars(
+                select(DailyProductionReport).where(
+                    DailyProductionReport.company_name == company,
+                    DailyProductionReport.report_date == date_,
+                )
+            ):
+                r.status = "submitted"
+                r.submitted_at = r.submitted_at or now
+                r.updated_at = now
+        else:
+            post.status = "failed"
+            parts = []
+            if api_result.get("line_error"):
+                parts.append(f"LINEERROR: {api_result['line_error']}")
+            if api_result.get("exception"):
+                parts.append(f"EXCEPTIONS: {api_result['exception']}")
+            parts.append(
+                f"created={api_result.get('created')} altered={api_result.get('altered')} "
+                f"errors={api_result.get('errors')}"
+            )
+            post.tally_error = " | ".join(parts)
+        session.commit()
+    from urllib.parse import urlencode
+    return RedirectResponse(
+        f"/production/line-voucher?{urlencode({'company': company, 'date': date_})}",
+        status_code=303,
+    )
 
 
 @app.get("/production/processes", response_class=HTMLResponse)
@@ -2493,9 +4411,14 @@ async def sp_reset(shift: str, request: Request):
 
 
 @app.get("/production/process-catalog", response_class=HTMLResponse)
-def pp_catalog(request: Request, company: str | None = None):
+def pp_catalog(request: Request, company: str | None = None, edit: int | None = None, synced: int | None = None):
     with _session() as session:
         company = _pp_resolve_company(session, company)
+        edit_entry = None
+        if edit is not None:
+            cand = session.get(ProcessCatalogEntry, edit)
+            if cand and cand.company_name == company:
+                edit_entry = cand
         stages = _ps_load(session, company)
         # Usage counts for safe-delete on stages.
         stage_usage: dict[str, int] = {s.key: 0 for s in stages}
@@ -2526,6 +4449,8 @@ def pp_catalog(request: Request, company: str | None = None):
             "stage_options": _ps_options(stages),
             "stage_labels": _ps_labels(stages),
             "stage_usage": stage_usage,
+            "edit_entry": edit_entry,
+            "synced": synced,
         },
     )
 
@@ -2658,10 +4583,18 @@ async def pp_catalog_add(request: Request):
     label = (form.get("label") or "").strip()
     stage = (form.get("stage") or "").strip()
     group_label = (form.get("group_label") or "").strip() or None
+    role = (form.get("role") or "").strip().lower() or None
+    validate_count = form.get("validate_count") in ("1", "on", "true")
+    if role not in {None, "input", "output"}:
+        raise HTTPException(400, "role must be input or output")
     if not (company and section and label and stage):
         raise HTTPException(400, "company, section, label and stage required")
     if section not in dict(dpr.SECTION_OPTIONS):
         raise HTTPException(400, "invalid section")
+    if section == "production" and role is None:
+        role = "output"
+    if section != "production":
+        role = None
     with _session() as session:
         if stage not in _ps_active_keys(session, company):
             raise HTTPException(400, "invalid stage")
@@ -2671,10 +4604,85 @@ async def pp_catalog_add(request: Request):
             label=label,
             stage=stage,
             group_label=group_label,
+            role=role,
+            validate_count=validate_count if section == "production" else True,
         ))
         session.commit()
     return RedirectResponse(
         f"/production/process-catalog?company={company}#sec-{section}", status_code=303
+    )
+
+
+@app.post("/production/process-catalog/sync-flags")
+async def pp_catalog_sync_flags(request: Request):
+    """Push role + validate_count from catalog entries to matching line
+    rows (matched by company + section + label + stage). Existing line rows
+    keep their sort_order, group_label and active flag — only the two flag
+    columns are overwritten. Doesn't add new rows or remove orphans."""
+    form = await request.form()
+    company = (form.get("company") or "").strip()
+    if not company:
+        raise HTTPException(400, "company required")
+    updated = 0
+    with _session() as session:
+        catalog = list(session.scalars(
+            select(ProcessCatalogEntry).where(ProcessCatalogEntry.company_name == company)
+        ))
+        index = {(c.section, c.label, c.stage): c for c in catalog}
+        for row in session.scalars(
+            select(ProductionProcess).where(ProductionProcess.company_name == company)
+        ):
+            cat = index.get((row.section, row.label, row.stage))
+            if not cat:
+                continue
+            changed = False
+            if row.section == "production":
+                if row.role != cat.role:
+                    row.role = cat.role
+                    changed = True
+                if bool(row.validate_count) != bool(cat.validate_count):
+                    row.validate_count = bool(cat.validate_count)
+                    changed = True
+            if changed:
+                updated += 1
+        session.commit()
+    return RedirectResponse(
+        f"/production/process-catalog?company={company}&synced={updated}",
+        status_code=303,
+    )
+
+
+@app.post("/production/process-catalog/{entry_id}/edit")
+async def pp_catalog_edit(entry_id: int, request: Request):
+    form = await request.form()
+    company = (form.get("company") or "").strip()
+    label = (form.get("label") or "").strip()
+    stage = (form.get("stage") or "").strip()
+    group_label = (form.get("group_label") or "").strip() or None
+    role = (form.get("role") or "").strip().lower() or None
+    if role not in {None, "input", "output"}:
+        raise HTTPException(400, "role must be input or output")
+    if not (label and stage):
+        raise HTTPException(400, "label and stage required")
+    with _session() as session:
+        if stage not in _ps_active_keys(session, company):
+            raise HTTPException(400, "invalid stage")
+        row = session.get(ProcessCatalogEntry, entry_id)
+        if not row or row.company_name != company:
+            raise HTTPException(404, "catalog entry not found")
+        row.label = label
+        row.stage = stage
+        row.group_label = group_label if row.section == "rejection" else None
+        if row.section == "production":
+            row.role = role or "output"
+            row.validate_count = form.get("validate_count") in ("1", "on", "true")
+        else:
+            row.role = None
+        section = row.section
+        session.commit()
+    return RedirectResponse(
+        f"/production/process-catalog?company={company}#sec-{section}",
+        status_code=303,
     )
 
 
@@ -2789,6 +4797,8 @@ async def pp_apply_catalog(line: str, request: Request):
             stage=entry.stage,
             label=entry.label,
             group_label=entry.group_label,
+            role=entry.role,
+            validate_count=bool(getattr(entry, "validate_count", True)),
             sort_order=max_so + 10,
             active=True,
         ))
@@ -2909,10 +4919,19 @@ async def pp_add(line: str, request: Request):
     label = (form.get("label") or "").strip()
     stage = (form.get("stage") or "").strip()
     group_label = (form.get("group_label") or "").strip() or None
+    role = (form.get("role") or "").strip().lower() or None
+    validate_count = form.get("validate_count") in ("1", "on", "true")
+    if role not in {None, "input", "output"}:
+        raise HTTPException(400, "role must be input or output")
     if not (company and section and label and stage):
         raise HTTPException(400, "company, section, label and stage required")
     if section not in dict(dpr.SECTION_OPTIONS):
         raise HTTPException(400, "invalid section")
+    if section == "production" and role is None:
+        # Default new production rows to output if the form omitted role.
+        role = "output"
+    if section != "production":
+        role = None
     with _session() as session:
         if stage not in _ps_active_keys(session, company):
             raise HTTPException(400, "invalid stage")
@@ -2932,6 +4951,8 @@ async def pp_add(line: str, request: Request):
             stage=stage,
             label=label,
             group_label=group_label,
+            role=role,
+            validate_count=validate_count if section == "production" else True,
             sort_order=max_so + 10,
             active=True,
         ))
@@ -2948,6 +4969,9 @@ async def pp_edit(line: str, process_id: int, request: Request):
     label = (form.get("label") or "").strip()
     stage = (form.get("stage") or "").strip()
     group_label = (form.get("group_label") or "").strip() or None
+    role = (form.get("role") or "").strip().lower() or None
+    if role not in {None, "input", "output"}:
+        raise HTTPException(400, "role must be input or output")
     if not (label and stage):
         raise HTTPException(400, "label and stage required")
     with _session() as session:
@@ -2959,6 +4983,9 @@ async def pp_edit(line: str, process_id: int, request: Request):
         row.label = label
         row.stage = stage
         row.group_label = group_label
+        row.role = role if row.section == "production" else None
+        if row.section == "production":
+            row.validate_count = form.get("validate_count") in ("1", "on", "true")
         section = row.section
         session.commit()
     return RedirectResponse(
