@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% block brand_title %}Tally <span class="accent">Production</span>{% endblock %}
 {% block title %}Hour Entry — {{ report.report_date|dmy }} {{ report.shift }} L{{ report.line }} · {{ selected_label }}{% endblock %}
 
 {% block content %}

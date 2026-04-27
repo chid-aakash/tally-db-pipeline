@@ -28,6 +28,7 @@ from ..db import engine, get_session
 from ..models import (
     Base,
     Company,
+    CompanyAlias,
     ConsumptionReportSelection,
     DailyProductionReport,
     DPRHourlyCell,
@@ -41,6 +42,7 @@ from ..models import (
     ProductionModelHole,
     ProductionModelSpec,
     ProductionProcess,
+    Shift,
     ShiftPresetSlot,
     SJPolicy,
     StockGroup,
@@ -92,6 +94,31 @@ def _inr(value) -> str:
     return f"-{result}" if negative else result
 
 
+def _inum(value) -> str:
+    """Format a number with Indian comma grouping (xx,xx,xxx.xx), no symbol."""
+    try:
+        n = float(value or 0)
+    except (TypeError, ValueError):
+        return ""
+    negative = n < 0
+    n = abs(n)
+    whole, _, frac = f"{n:.2f}".partition(".")
+    if len(whole) <= 3:
+        grouped = whole
+    else:
+        last3 = whole[-3:]
+        rest = whole[:-3]
+        pairs = []
+        while len(rest) > 2:
+            pairs.insert(0, rest[-2:])
+            rest = rest[:-2]
+        if rest:
+            pairs.insert(0, rest)
+        grouped = ",".join(pairs) + "," + last3
+    result = f"{grouped}.{frac}"
+    return f"-{result}" if negative else result
+
+
 def _nice_date(iso: str) -> str:
     """Format an ISO date (YYYY-MM-DD) as '24<sup>th</sup> April 26' (HTML)."""
     from markupsafe import Markup
@@ -126,9 +153,25 @@ def _dmy(value) -> str:
         return str(value)
 
 
+def _co_short(name: str | None) -> str:
+    """Map a full company name to its short code for print/PDF output.
+
+    Why: the registered names ("Avinash Appliances Private Limited (April 26 - March 27)",
+    "Shanke Enterprise ...") are too long for letterheads; users want AAPL / SEPL.
+    """
+    n = (name or "").lower()
+    if "avinash" in n:
+        return "AAPL"
+    if "shanke" in n:
+        return "SEPL"
+    return (name or "").strip()
+
+
 templates.env.filters["inr"] = _inr
+templates.env.filters["inum"] = _inum
 templates.env.filters["nice_date"] = _nice_date
 templates.env.filters["dmy"] = _dmy
+templates.env.filters["co_short"] = _co_short
 
 app = FastAPI(title="Tally Production Entry")
 
@@ -238,6 +281,23 @@ def _self_heal_add_price_columns() -> None:
 
 
 _self_heal_add_price_columns()
+
+
+def _self_heal_shift_preset_times() -> None:
+    """Add `from_time` / `to_time` columns to shift_preset_slots if missing.
+    Pre-existing rows keep `label` only; from/to stay NULL until re-saved."""
+    from sqlalchemy import inspect, text
+    insp = inspect(engine)
+    if "shift_preset_slots" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("shift_preset_slots")}
+    with engine.begin() as conn:
+        for col in ("from_time", "to_time"):
+            if col not in cols:
+                conn.execute(text(f"ALTER TABLE shift_preset_slots ADD COLUMN {col} VARCHAR(5)"))
+
+
+_self_heal_shift_preset_times()
 # Ensure newly introduced tables exist (idempotent). Sync also does this, but the
 # webapp may be started before a full sync on a fresh machine.
 Base.metadata.create_all(bind=engine)
@@ -794,6 +854,22 @@ def api_get_entry(entry_id: int):
         return _entry_to_json(entry)
 
 
+@app.delete("/api/entries/{entry_id}")
+def api_delete_entry(entry_id: int):
+    """Delete a staged entry (draft / failed). Posted entries are not deletable
+    from here — the voucher is already in Tally."""
+    with _session() as session:
+        entry = _load_entry(session, entry_id)
+        if entry.status == "posted":
+            raise HTTPException(
+                400,
+                "Cannot delete a posted entry — the voucher is already in Tally.",
+            )
+        session.delete(entry)
+        session.commit()
+        return {"ok": True, "deleted_id": entry_id}
+
+
 @app.post("/api/entries/{entry_id}/post")
 def api_post_entry(entry_id: int):
     with _session() as session:
@@ -902,14 +978,12 @@ if STATIC_DIR.exists():
 
 
 @app.get("/app", response_class=HTMLResponse)
-def spa_react():
-    index = STATIC_DIR / "app.html"
-    if not index.exists():
-        raise HTTPException(404, "React app not built. Expected at webapp/static/app.html")
-    return FileResponse(
-        index,
-        headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"},
-    )
+def spa_react(request: Request):
+    response = templates.TemplateResponse(request, "app.html")
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 
 @app.get("/entries", response_class=HTMLResponse)
@@ -969,13 +1043,9 @@ def _logo_for_company(name: str) -> str | None:
 @app.get("/policies", response_class=HTMLResponse)
 def policies_page(request: Request):
     """Serve the policy management SPA page."""
-    path = Path(__file__).parent / "static" / "policies.html"
-    if not path.exists():
-        raise HTTPException(404, "policies.html missing")
-    return FileResponse(
-        path,
-        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
-    )
+    response = templates.TemplateResponse(request, "policies.html")
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return response
 
 
 @app.get("/api/all-companies")
@@ -2075,65 +2145,99 @@ def _dpr_compute_totals(
     }
 
 
+def _review_clock_display(from_t: str | None, to_t: str | None, label: str) -> str:
+    """Friendly cutoff label for the review dropdown. Prefer the slot's `to_time`
+    (the end of the interval — what the user picks "until"). Fall back to
+    `from_time`, then the legacy paper label with a leading '<'."""
+    def fmt(hhmm: str) -> str:
+        try:
+            h, mm = hhmm.split(":")
+            hi = int(h)
+        except (ValueError, AttributeError):
+            return hhmm
+        ampm = "AM" if hi < 12 else "PM"
+        h12 = hi % 12 or 12
+        return f"{h12}:{mm} {ampm}"
+    if to_t:
+        return fmt(to_t)
+    if from_t:
+        return fmt(from_t)
+    return f"< {label}"
+
+
 @app.get("/production/review", response_class=HTMLResponse)
 def production_review(
     request: Request,
     date: str | None = None,
+    segments: int = 1,
+    from1: str | None = None, until1: str | None = None,
+    from2: str | None = None, until2: str | None = None,
+    from3: str | None = None, until3: str | None = None,
+    # Legacy single-cutoff URL (older bookmarks). Maps onto until1.
     cutoff: str | None = None,
 ):
     from datetime import date as _d
     today = _d.today().isoformat()
     review_date = date or today
+    segments = max(1, min(3, segments or 1))
 
-    # Cutoff options = the S1 hour slots in chronological order. Each option
-    # represents "everything logged up to and including this hour". Labels are
-    # "< 9:00 AM" style so the dropdown reads like the paper board ("until 1 PM").
-    s1_slots = list(dpr.SHIFT_PRESETS.get("S1") or dpr.HOUR_SLOTS)
-    s1_slots = [(k, lbl) for (k, lbl) in s1_slots if k != "ot"]
+    # The picker is a fixed half-hour clock grid (06:00 → 23:30) — independent
+    # of any shift's preset rows. Each option's `key` is the clock time as
+    # "HH:MM"; aggregation maps every report cell to its slot's end-time and
+    # includes the cell when window_from < end_time <= window_until.
+    company = _tally_company_name()
 
-    def _label_to_clock(label: str) -> str:
-        # Paper labels ("8", "9", "12", "1", "2:30", "5:30") -> "< 9:00 AM",
-        # "< 5:30 PM" for the cutoff dropdown. 8..11 are AM; 12 and 1..7 are PM.
-        s = (label or "").strip()
+    def _half_hour_grid(start: str = "06:00", end: str = "23:30") -> list[str]:
+        out: list[str] = []
+        h, m = int(start[:2]), int(start[3:])
+        eh, em = int(end[:2]), int(end[3:])
+        while (h, m) <= (eh, em):
+            out.append(f"{h:02d}:{m:02d}")
+            m += 30
+            if m >= 60:
+                h += 1
+                m = 0
+        return out
+
+    def _fmt_clock(hhmm: str) -> str:
+        h, m = int(hhmm[:2]), int(hhmm[3:])
+        ampm = "AM" if h < 12 else "PM"
+        h12 = h % 12 or 12
+        return f"{h12}:{m:02d} {ampm}"
+
+    grid_keys = _half_hour_grid("00:00", "23:30")
+    slot_options = [
+        {"key": t, "label": _fmt_clock(t), "display": _fmt_clock(t), "index": idx}
+        for idx, t in enumerate(grid_keys)
+    ]
+    valid_keys = list(grid_keys)
+
+    def _default_range(seg_index: int, total: int) -> tuple[str, str]:
+        """Spread default segment ranges evenly across the day's data window
+        so 2 segments = halves, 3 = thirds. The window is anchored on the
+        first/last clock-time we have report data for (set below); when there
+        are no reports yet we fall back to the full grid (06:00 → 23:30)."""
+        if not valid_keys:
+            return ("", "")
         try:
-            n = int(s.split(":", 1)[0])
+            lo = valid_keys.index(_default_window[0])
+            hi = valid_keys.index(_default_window[1])
         except ValueError:
-            return f"< {s}"
-        ampm = "AM" if 8 <= n <= 11 else "PM"
-        clock = s if ":" in s else f"{s}:00"
-        return f"< {clock} {ampm}"
+            lo, hi = 0, len(valid_keys) - 1
+        n = (hi - lo) + 1
+        start_pos = lo + (seg_index * n) // total
+        end_pos = lo + (((seg_index + 1) * n) // total) - 1
+        start_pos = max(lo, min(hi, start_pos))
+        end_pos = max(start_pos, min(hi, end_pos))
+        return (valid_keys[start_pos], valid_keys[end_pos])
 
-    cutoff_options = []
-    for idx, (k, lbl) in enumerate(s1_slots):
-        cutoff_options.append({
-            "key": k,
-            "label": lbl,
-            "display": _label_to_clock(lbl),
-            "index": idx,
-        })
+    # Filled in once the data load completes — used by `_default_range`.
+    _default_window: tuple[str, str] = (valid_keys[0], valid_keys[-1])
 
-    # Resolve effective cutoff key. Default to the last slot.
-    valid_keys = {opt["key"] for opt in cutoff_options}
-    if cutoff and cutoff in valid_keys:
-        cutoff_key = cutoff
-    else:
-        cutoff_key = cutoff_options[-1]["key"] if cutoff_options else ""
-    cutoff_index = next(
-        (opt["index"] for opt in cutoff_options if opt["key"] == cutoff_key), -1
-    )
-    included_keys = {
-        opt["key"] for opt in cutoff_options if opt["index"] <= cutoff_index
-    }
-    cutoff_display = next(
-        (opt["display"] for opt in cutoff_options if opt["key"] == cutoff_key),
-        "",
-    )
-
-    # Per-line cumulative aggregates (input, rej, rework) across all reports
-    # for this date, restricted to hour cells at or before the cutoff.
-    totals: dict[str, dict[str, float]] = {}
+    # Aggregate cells once, then derive per-segment totals from the in-memory
+    # rows. Each cell is anchored on its slot's clock end-time (fallback start)
+    # so window inclusion compares clock times directly.
     report_id_by_line: dict[str, int] = {}
-
     with _session() as session:
         reports = list(session.scalars(
             select(DailyProductionReport).where(
@@ -2144,47 +2248,145 @@ def production_review(
             line_label = f"LINE-{r.line}"
             if line_label not in report_id_by_line or (r.shift or "").upper() == "S1":
                 report_id_by_line[line_label] = r.id
-
         report_ids = [r.id for r in reports]
         line_by_report = {r.id: r.line for r in reports}
-        if report_ids:
-            cells = list(session.scalars(
-                select(DPRHourlyCell).where(DPRHourlyCell.report_id.in_(report_ids))
-            ))
-            for c in cells:
-                if c.hour_key == "cumulative":
+        shift_by_report = {r.id: (r.shift or "").strip().upper() for r in reports}
+        # Per-line "input" row: the active production_processes row whose
+        # role='input'. row_key in dpr_hourly_cells stores its id as a string.
+        input_row_key_by_line: dict[int, str] = {}
+        if reports and company:
+            for p in session.scalars(
+                select(ProductionProcess).where(
+                    ProductionProcess.company_name == company,
+                    ProductionProcess.section == "production",
+                    ProductionProcess.role == "input",
+                    ProductionProcess.active.is_(True),
+                )
+            ):
+                input_row_key_by_line.setdefault(p.line, str(p.id))
+        # Each hour-bucket lives at one anchor on the half-hour picker grid:
+        #   • normal slot [from, to]          → anchor = to
+        #   • "Before X" (only to_time set)   → anchor = to − 30 min
+        #   • "After X"  (only from_time set) → anchor = from + 30 min
+        # Inclusion is `From < anchor ≤ Until` (left-exclusive) so adjacent
+        # windows never double-count. Hourly data is hourly, so each bucket
+        # belongs to exactly one window even though the picker is half-hourly.
+        def _shift_clock(t: str, minutes: int) -> str:
+            h, m = int(t[:2]), int(t[3:])
+            total = max(0, min(23 * 60 + 59, h * 60 + m + minutes))
+            return f"{total // 60:02d}:{total % 60:02d}"
+
+        slot_anchor: dict[tuple[str, str], str] = {}
+        shifts_present = {s for s in shift_by_report.values() if s}
+        for sh in shifts_present:
+            for s in (_shift_load(session, company, sh) if company else []):
+                ft = (s.from_time or "").strip()
+                tt = (s.to_time or "").strip()
+                if ft and tt:
+                    anchor = tt
+                elif tt:
+                    anchor = _shift_clock(tt, -30)
+                elif ft:
+                    anchor = _shift_clock(ft, 30)
+                else:
                     continue
-                if c.hour_key not in included_keys:
+                slot_anchor[(sh, s.key)] = anchor
+        all_cells: list[tuple[str, str, str, float]] = []  # (line, anchor, kind, value)
+        if report_ids:
+            for c in session.scalars(
+                select(DPRHourlyCell).where(DPRHourlyCell.report_id.in_(report_ids))
+            ):
+                if c.hour_key == "cumulative":
                     continue
                 rline = line_by_report.get(c.report_id)
                 if not rline:
                     continue
-                line_label = f"LINE-{rline}"
-                bucket = totals.setdefault(
-                    line_label, {"input": 0.0, "rej": 0.0, "rework": 0.0}
+                anchor = slot_anchor.get(
+                    (shift_by_report.get(c.report_id, ""), c.hour_key)
                 )
-                val = float(c.value or 0)
-                if c.section == "production" and c.row_key == "single_edger_input":
-                    bucket["input"] += val
+                if not anchor:
+                    continue
+                if (
+                    c.section == "production"
+                    and str(c.row_key) == input_row_key_by_line.get(rline)
+                ):
+                    kind = "input"
                 elif c.section == "rejection":
-                    bucket["rej"] += val
+                    kind = "rej"
                 elif c.section == "rework":
-                    bucket["rework"] += val
+                    kind = "rework"
+                else:
+                    continue
+                all_cells.append(
+                    (f"LINE-{rline}", anchor, kind, float(c.value or 0))
+                )
+
+    # Snap defaults to the actual data window — earliest and latest anchors
+    # rounded onto the half-hour grid. From is one tick earlier so the
+    # earliest anchor is included by the left-exclusive comparison below.
+    if all_cells:
+        anchors = sorted({a for _, a, _, _ in all_cells})
+
+        def _snap(t: str, *, up: bool) -> str:
+            for k in (grid_keys if up else reversed(grid_keys)):
+                if (k >= t) if up else (k <= t):
+                    return k
+            return grid_keys[-1] if up else grid_keys[0]
+
+        lo = _snap(anchors[0], up=False)
+        # Step From back one half-hour so `from < anchor` still passes for
+        # the earliest bucket (otherwise its anchor equals From and is missed).
+        try:
+            lo_idx = grid_keys.index(lo)
+            if lo_idx > 0:
+                lo = grid_keys[lo_idx - 1]
+        except ValueError:
+            pass
+        _default_window = (lo, _snap(anchors[-1], up=True))
 
     lines = sorted(
         {f"LINE-{r.line}" for r in reports},
         key=lambda s: (len(s), s),
     )
 
-    prefill: dict[str, dict[str, float]] = {}
-    for line in lines:
-        b = totals.get(line, {"input": 0.0, "rej": 0.0, "rework": 0.0})
-        prefill[line] = {
-            "input": b["input"],
-            "rej": b["rej"],
-            "rework": b["rework"],
-            "actual": b["input"] - b["rej"],
-        }
+    raw_pairs = [(from1, until1), (from2, until2), (from3, until3)]
+    # Map legacy ?cutoff=K onto segment 1's Until when from1/until1 are blank.
+    if cutoff and not raw_pairs[0][1]:
+        raw_pairs[0] = (raw_pairs[0][0], cutoff)
+
+    chosen_ranges: list[tuple[str, str]] = []
+    for i in range(segments):
+        df, dt = _default_range(i, segments)
+        f_raw = (raw_pairs[i][0] or "").strip()
+        u_raw = (raw_pairs[i][1] or "").strip()
+        f_key = f_raw if f_raw in valid_keys else df
+        u_key = u_raw if u_raw in valid_keys else dt
+        # Guarantee From precedes (or equals) Until — swap if user inverted.
+        if f_key and u_key:
+            f_idx = valid_keys.index(f_key)
+            u_idx = valid_keys.index(u_key)
+            if f_idx > u_idx:
+                f_key, u_key = u_key, f_key
+        chosen_ranges.append((f_key, u_key))
+
+    seg_totals: list[dict[str, dict[str, float]]] = []
+    seg_displays: list[dict[str, str]] = []
+    for f_key, u_key in chosen_ranges:
+        per_line: dict[str, dict[str, float]] = {}
+        if f_key and u_key:
+            for line, anchor, kind, val in all_cells:
+                # Left-exclusive: From < anchor ≤ Until. Each hour-bucket sits
+                # at one anchor, so adjacent windows partition the day cleanly.
+                if not (f_key < anchor <= u_key):
+                    continue
+                b = per_line.setdefault(line, {"input": 0.0, "rej": 0.0, "rework": 0.0})
+                b[kind] += val
+        for line in lines:
+            b = per_line.setdefault(line, {"input": 0.0, "rej": 0.0, "rework": 0.0})
+            b["actual"] = b["input"] - b["rej"]
+        seg_totals.append(per_line)
+        seg_displays.append({"from": _fmt_clock(f_key) if f_key else "",
+                             "until": _fmt_clock(u_key) if u_key else ""})
 
     return templates.TemplateResponse(
         request,
@@ -2193,11 +2395,47 @@ def production_review(
             "review_date": review_date,
             "today": today,
             "lines": lines,
-            "cutoff_options": cutoff_options,
-            "cutoff_key": cutoff_key,
-            "cutoff_display": cutoff_display,
-            "prefill": prefill,
+            "slot_options": slot_options,
+            "segments": segments,
+            "chosen_ranges": chosen_ranges,
+            "seg_totals": seg_totals,
+            "seg_displays": seg_displays,
             "report_id_by_line": report_id_by_line,
+        },
+    )
+
+
+@app.get("/production/recent-reports", response_class=HTMLResponse)
+def dpr_recent(
+    request: Request,
+    date_from: str | None = None,
+    date_to: str | None = None,
+):
+    with _session() as session:
+        company = _tally_company_name()
+        q = select(DailyProductionReport).order_by(
+            DailyProductionReport.report_date.desc(),
+            DailyProductionReport.line,
+            DailyProductionReport.shift,
+            DailyProductionReport.model,
+        )
+        if company:
+            q = q.where(DailyProductionReport.company_name == company)
+        if date_from:
+            q = q.where(DailyProductionReport.report_date >= date_from)
+        if date_to:
+            q = q.where(DailyProductionReport.report_date <= date_to)
+        reports = list(session.scalars(q))
+        draft_count = sum(1 for r in reports if (r.status or "").lower() == "draft")
+    return templates.TemplateResponse(
+        request,
+        "production_recent.html",
+        {
+            "tally_company_name": company,
+            "filter_date_from": date_from or "",
+            "filter_date_to": date_to or "",
+            "reports": reports,
+            "draft_count": draft_count,
         },
     )
 
@@ -2244,6 +2482,7 @@ def dpr_list(
             if not cust:
                 continue
             models_by_customer.setdefault(cust, []).append(s.model)
+        shift_rows = _shifts_load(session, company) if company else []
     return templates.TemplateResponse(
         request,
         "production_list.html",
@@ -2253,7 +2492,7 @@ def dpr_list(
             "reports": reports,
             "draft_count": draft_count,
             "today": _d.today().isoformat(),
-            "shift_options": dpr.SHIFT_OPTIONS,
+            "shift_options": [(s.key, s.name) for s in shift_rows],
             "line_options": dpr.LINE_OPTIONS,
             "models_by_customer": models_by_customer,
         },
@@ -2352,6 +2591,7 @@ def dpr_edit(request: Request, report_id: int):
             except ValueError:
                 rd = _date.today()
         default_rev_date = rd.strftime("%d/%m/%Y")
+        shift_rows = _shifts_load(session, report.company_name)
     return templates.TemplateResponse(
         request,
         "production_edit.html",
@@ -2368,7 +2608,7 @@ def dpr_edit(request: Request, report_id: int):
             "hour_models": hour_models,
             "hour_model_chain": hour_model_chain,
             "distinct_models": distinct_models,
-            "shift_options": dpr.SHIFT_OPTIONS,
+            "shift_options": [(s.key, s.name) for s in shift_rows],
             "line_options": dpr.LINE_OPTIONS,
             "config_empty": config_empty,
             "default_doc_no": default_doc_no,
@@ -2549,16 +2789,66 @@ async def dpr_save(request: Request, report_id: int):
                 remarks=(form.get(f"idle__{idx}__remarks") or "").strip() or None,
             ))
 
+        # ---- Per-hour rejection-allocation check ----
+        # Mark-ready and View-summary both require the same allocation to be
+        # closed out that the hour-entry page enforces. Save draft skips the
+        # check so partial work-in-progress isn't blocked. We commit the
+        # draft so the user's edits aren't lost, but refuse to advance the
+        # status / navigate away when any hour has uncounted glasses.
+        validation_errors: list[str] = []
+        if action in ("submit", "view"):
+            stage_chain = _dpr_build_stage_chain(prod_rows, rej_groups)
+
+            def _form_cell(section: str, row_key: str | None, hkey: str) -> float:
+                if not row_key:
+                    return 0.0
+                return _dpr_parse_float(form.get(f"cell__{section}__{row_key}__{hkey}"))
+
+            for hkey, hlabel in new_slots:
+                for s in stage_chain:
+                    if not s.get("validate_count"):
+                        continue
+                    input_val = _form_cell("production", s.get("effective_input_row_key"), hkey)
+                    output_val = _form_cell("production", s.get("output_row_key"), hkey)
+                    filled = sum(
+                        _form_cell("rejection", rk, hkey)
+                        for rk in s.get("rejection_row_keys", [])
+                    )
+                    if input_val == 0 and output_val == 0 and filled == 0:
+                        continue
+                    diff = (input_val - output_val) - filled
+                    if abs(diff) >= 0.001:
+                        if diff > 0:
+                            validation_errors.append(
+                                f"{hlabel} · {s['label']}: {diff:.0f} uncounted "
+                                f"(input {input_val:.0f} − output {output_val:.0f} = "
+                                f"{(input_val - output_val):.0f}, rejection adds up to {filled:.0f})"
+                            )
+                        else:
+                            validation_errors.append(
+                                f"{hlabel} · {s['label']}: {(-diff):.0f} over expected "
+                                f"(input {input_val:.0f} − output {output_val:.0f} = "
+                                f"{(input_val - output_val):.0f}, rejection adds up to {filled:.0f})"
+                            )
+
         # Status state machine:
         #   draft → saved (via the "Save" button, action=submit). Saved means
         #     "ready to post but not yet pushed to Tally" — still editable.
         #   saved → submitted ONLY happens when the SJ-LINE voucher is
         #     successfully posted to Tally (line_publish_submit).
-        if action == "submit":
+        if action == "submit" and not validation_errors:
             report.status = "saved"
             report.submitted_at = datetime.utcnow()
         report.updated_at = datetime.utcnow()
         session.commit()
+
+        if validation_errors:
+            from urllib.parse import urlencode
+            qs = urlencode({"validation_error": "\n".join(validation_errors)})
+            return RedirectResponse(
+                f"/production/daily-report/{report_id}/edit?{qs}",
+                status_code=303,
+            )
 
         target = f"/production/daily-report/{report_id}"
         # ``save`` keeps the user on the edit page; ``submit`` (now meaning
@@ -2777,8 +3067,8 @@ async def dpr_entry_save(request: Request, report_id: int):
         # ---- Append idle events (do NOT delete existing) ----
         existing_max = max((e.ordinal for e in report.idle_events), default=-1)
         idle_indices = sorted({
-            int(k.split("__")[2]) for k in form.keys()
-            if k.startswith("idle_new__") and len(k.split("__")) >= 3 and k.split("__")[2].isdigit()
+            int(k.split("__")[1]) for k in form.keys()
+            if k.startswith("idle_new__") and len(k.split("__")) >= 3 and k.split("__")[1].isdigit()
         })
         next_ord = existing_max + 1
         for idx in idle_indices:
@@ -3186,11 +3476,16 @@ def dpr_summary(request: Request, report_id: int):
 
 
 @app.post("/production/daily-report/delete-all-drafts")
-async def dpr_delete_all_drafts(date: str | None = Form(None)):
-    """Bulk-delete every draft DPR under the configured Tally company. If
-    ``date`` is supplied (matching the Recent reports date filter), the bulk
-    delete is scoped to that date so the UI action matches what the user is
-    looking at. Submitted reports are never touched."""
+async def dpr_delete_all_drafts(
+    date: str | None = Form(None),
+    date_from: str | None = Form(None),
+    date_to: str | None = Form(None),
+    redirect_to: str | None = Form(None),
+):
+    """Bulk-delete every draft DPR under the configured Tally company. The
+    delete is scoped to whatever date filter the caller is showing — either an
+    exact ``date`` or a ``date_from`` / ``date_to`` range (either bound is
+    optional). Submitted reports are never touched."""
     company = _tally_company_name()
     with _session() as session:
         q = select(DailyProductionReport).where(
@@ -3199,10 +3494,16 @@ async def dpr_delete_all_drafts(date: str | None = Form(None)):
         )
         if date:
             q = q.where(DailyProductionReport.report_date == date)
+        if date_from:
+            q = q.where(DailyProductionReport.report_date >= date_from)
+        if date_to:
+            q = q.where(DailyProductionReport.report_date <= date_to)
         drafts = list(session.scalars(q))
         for r in drafts:
             session.delete(r)
         session.commit()
+    if redirect_to:
+        return RedirectResponse(redirect_to, status_code=303)
     from urllib.parse import urlencode
     qs = urlencode({"date": date} if date else {})
     target = "/production/daily-report" + (f"?{qs}" if qs else "")
@@ -3289,6 +3590,90 @@ def _shift_slug(label: str, taken: set[str]) -> str:
         candidate = f"{base}_{n}"
         n += 1
     return candidate
+
+
+def _shifts_load(session: Session, company: str) -> list[Shift]:
+    """Return the company's shift list, seeding from `dpr.SHIFT_OPTIONS` on
+    first use so the page is never empty. Sorted by sort_order, then id."""
+    rows = list(session.scalars(
+        select(Shift)
+        .where(Shift.company_name == company)
+        .order_by(Shift.sort_order, Shift.id)
+    ))
+    if rows:
+        return rows
+    for idx, key in enumerate(dpr.SHIFT_OPTIONS):
+        session.add(Shift(
+            company_name=company, key=key, name=key, sort_order=(idx + 1) * 10,
+        ))
+    session.commit()
+    return list(session.scalars(
+        select(Shift)
+        .where(Shift.company_name == company)
+        .order_by(Shift.sort_order, Shift.id)
+    ))
+
+
+def _shift_keys(session: Session, company: str) -> list[str]:
+    return [s.key for s in _shifts_load(session, company)]
+
+
+def _shift_key_in_use(session: Session, company: str, key: str) -> int:
+    """Count of DPR reports already pointing at this shift key — used to gate
+    delete/rename of the shift itself."""
+    from sqlalchemy import func
+    return session.scalar(
+        select(func.count(DailyProductionReport.id)).where(
+            DailyProductionReport.company_name == company,
+            DailyProductionReport.shift == key,
+        )
+    ) or 0
+
+
+def _shift_make_key(name: str, taken: set[str]) -> str:
+    raw = _re_pp.sub(r"[^A-Za-z0-9]+", "", name.upper()) or "SHIFT"
+    candidate = raw[:20]
+    n = 2
+    while candidate in taken:
+        suffix = f"_{n}"
+        candidate = (raw[: 20 - len(suffix)] + suffix)
+        n += 1
+    return candidate
+
+
+_TIME_RE = __import__("re").compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
+
+
+def _normalize_time(raw: str | None) -> str | None:
+    """Accept 'H:MM' or 'HH:MM' (24h), return canonical 'HH:MM' or None."""
+    s = (raw or "").strip()
+    if not s:
+        return None
+    m = _TIME_RE.match(s)
+    if not m:
+        raise HTTPException(400, f"invalid time {raw!r}; use HH:MM (24h)")
+    return f"{int(m.group(1)):02d}:{m.group(2)}"
+
+
+def _fmt_time_12h(hhmm: str) -> str:
+    """'09:00' -> '9:00', '14:30' -> '2:30' (drops leading zero, 12h clock)."""
+    h, mm = hhmm.split(":")
+    h12 = int(h) % 12 or 12
+    return f"{h12}:{mm}"
+
+
+def _shift_label_from_times(from_t: str | None, to_t: str | None) -> str:
+    """Derive a DPR header label from the From/To pair entered by the user.
+    Convention: a slot's [from, to] is its actual interval. A boundary slot
+    has only one side set — `to_time` alone means "Before X" (the slot ends
+    at X with no defined start), `from_time` alone means "After X"."""
+    if from_t and to_t:
+        return f"{_fmt_time_12h(from_t)} - {_fmt_time_12h(to_t)}"
+    if to_t and not from_t:
+        return f"Before {_fmt_time_12h(to_t)}"
+    if from_t and not to_t:
+        return f"After {_fmt_time_12h(from_t)}"
+    raise HTTPException(400, "From or To is required")
 
 
 def _shift_load(session: Session, company: str, shift: str) -> list[ShiftPresetSlot]:
@@ -3791,6 +4176,7 @@ async def model_specs_upload(
     request: Request,
     worksheet_name: str = Form(""),
     table_name: str = Form(""),
+    edit_password: str = Form(""),
     file: UploadFile = File(...),
 ):
     """Bulk-upsert specs from an .xlsx or .csv export of the OneDrive sheet.
@@ -3800,6 +4186,9 @@ async def model_specs_upload(
     Excel table on that sheet, so anything outside the table — title rows,
     summary blocks — is ignored. The sheet's "Customer" column is required
     per-row; rows without one are skipped and reported as errors."""
+    expected_pw = _models_edit_password()
+    if expected_pw and (edit_password or "").strip() != expected_pw:
+        raise HTTPException(403, "Wrong or missing password — model specs upload is locked.")
     raw = await file.read()
     name = (file.filename or "").lower()
     ws_arg = worksheet_name.strip()
@@ -3985,8 +4374,12 @@ def oauth_ms_signout():
 def model_specs_sync(
     worksheet_name: str = Form(""),
     table_name: str = Form(""),
+    edit_password: str = Form(""),
 ):
     """Pull a named Excel table live from OneDrive and upsert the specs."""
+    expected_pw = _models_edit_password()
+    if expected_pw and (edit_password or "").strip() != expected_pw:
+        raise HTTPException(403, "Wrong or missing password — model specs sync is locked.")
     if not onedrive_client.is_configured():
         raise HTTPException(400, "Microsoft Graph env vars not set in .env")
     if not onedrive_client.has_token():
@@ -4221,7 +4614,8 @@ def pp_index(request: Request, company: str | None = None):
         ):
             catalog_counts[e.section] = catalog_counts.get(e.section, 0) + 1
         catalog_total = sum(catalog_counts.values())
-        shift_counts = {sh: 0 for sh in dpr.SHIFT_OPTIONS}
+        shift_rows = _shifts_load(session, company)
+        shift_counts = {s.key: 0 for s in shift_rows}
         for s in session.scalars(
             select(ShiftPresetSlot).where(ShiftPresetSlot.company_name == company)
         ):
@@ -4236,7 +4630,7 @@ def pp_index(request: Request, company: str | None = None):
             "section_options": dpr.SECTION_OPTIONS,
             "catalog_counts": catalog_counts,
             "catalog_total": catalog_total,
-            "shift_options": dpr.SHIFT_OPTIONS,
+            "shift_options": [(s.key, s.name) for s in shift_rows],
             "shift_counts": shift_counts,
         },
     )
@@ -4285,38 +4679,230 @@ def pp_line(
 
 @app.get("/production/shift-presets", response_class=HTMLResponse)
 def sp_index(request: Request, company: str | None = None):
+    from types import SimpleNamespace
     with _session() as session:
         company = _pp_resolve_company(session, company)
-        shifts = {sh: _shift_load(session, company, sh) for sh in dpr.SHIFT_OPTIONS}
+        # Seed both tables up-front so subsequent reads don't trigger
+        # commits that would expire already-loaded rows.
+        shift_rows_orm = _shifts_load(session, company)
+        slot_rows_by_key: dict[str, list] = {
+            s.key: _shift_load(session, company, s.key) for s in shift_rows_orm
+        }
+        usage = {s.key: _shift_key_in_use(session, company, s.key) for s in shift_rows_orm}
+        # Materialize plain holders so the template doesn't dereference ORM
+        # attributes after the session closes.
+        shift_rows = [
+            SimpleNamespace(key=s.key, name=s.name) for s in shift_rows_orm
+        ]
+        slots = {
+            key: [
+                SimpleNamespace(
+                    id=r.id, key=r.key, label=r.label,
+                    from_time=r.from_time, to_time=r.to_time,
+                )
+                for r in rows
+            ]
+            for key, rows in slot_rows_by_key.items()
+        }
     return templates.TemplateResponse(
         request,
         "shift_presets.html",
         {
             "company": company,
-            "shifts": shifts,
-            "shift_options": dpr.SHIFT_OPTIONS,
+            "shifts": slots,
+            "shift_rows": shift_rows,
+            "shift_usage": usage,
         },
+    )
+
+
+@app.post("/production/shifts/add")
+async def shift_add(request: Request):
+    form = await request.form()
+    company = (form.get("company") or "").strip()
+    name = (form.get("name") or "").strip()
+    if not (company and name):
+        raise HTTPException(400, "company and name required")
+    with _session() as session:
+        existing = _shifts_load(session, company)
+        taken = {s.key for s in existing}
+        key = _shift_make_key(name, taken)
+        max_so = max((s.sort_order for s in existing), default=0)
+        session.add(Shift(
+            company_name=company, key=key, name=name, sort_order=max_so + 10,
+        ))
+        session.commit()
+    return RedirectResponse(
+        f"/production/shift-presets?company={company}#sec-{key}", status_code=303
+    )
+
+
+@app.post("/production/shifts/save-all")
+async def shifts_save_all(request: Request):
+    """Persist every shift's display name in one transaction. Form fields
+    `shift_key` and `shift_name` are parallel lists in document order. Empty
+    names are silently skipped (treat as no-op)."""
+    form = await request.form()
+    company = (form.get("company") or "").strip()
+    if not company:
+        raise HTTPException(400, "company required")
+    keys = form.getlist("shift_key")
+    names = form.getlist("shift_name")
+    if len(keys) != len(names):
+        raise HTTPException(400, "form arrays mismatched")
+    with _session() as session:
+        rows_by_key = {
+            r.key: r for r in session.scalars(
+                select(Shift).where(Shift.company_name == company)
+            )
+        }
+        for k, n in zip(keys, names):
+            k = (k or "").strip()
+            n = (n or "").strip()
+            if not (k and n):
+                continue
+            row = rows_by_key.get(k)
+            if not row:
+                continue
+            row.name = n
+        session.commit()
+    return RedirectResponse(
+        f"/production/shift-presets?company={company}", status_code=303
+    )
+
+
+@app.post("/production/shifts/{shift}/rename")
+async def shift_rename(shift: str, request: Request):
+    form = await request.form()
+    company = (form.get("company") or "").strip()
+    name = (form.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "name required")
+    with _session() as session:
+        row = session.scalar(
+            select(Shift).where(Shift.company_name == company, Shift.key == shift)
+        )
+        if not row:
+            raise HTTPException(404, "shift not found")
+        row.name = name
+        session.commit()
+    return RedirectResponse(
+        f"/production/shift-presets?company={company}#sec-{shift}", status_code=303
+    )
+
+
+@app.post("/production/shifts/{shift}/move")
+async def shift_move(shift: str, request: Request):
+    form = await request.form()
+    company = (form.get("company") or "").strip()
+    direction = (form.get("dir") or "").strip()
+    if direction not in {"up", "down"}:
+        raise HTTPException(400, "dir must be up or down")
+    with _session() as session:
+        peers = _shifts_load(session, company)
+        try:
+            idx = next(i for i, r in enumerate(peers) if r.key == shift)
+        except StopIteration:
+            raise HTTPException(404, "shift not found")
+        target_idx = idx - 1 if direction == "up" else idx + 1
+        if 0 <= target_idx < len(peers):
+            row = peers[idx]
+            other = peers[target_idx]
+            row.sort_order, other.sort_order = other.sort_order, row.sort_order
+            session.commit()
+    return RedirectResponse(
+        f"/production/shift-presets?company={company}#sec-{shift}", status_code=303
+    )
+
+
+@app.post("/production/shifts/{shift}/delete")
+async def shift_delete(shift: str, request: Request):
+    form = await request.form()
+    company = (form.get("company") or "").strip()
+    with _session() as session:
+        if _shift_key_in_use(session, company, shift) > 0:
+            raise HTTPException(
+                400,
+                f"shift {shift!r} is referenced by existing DPR reports — "
+                "rename instead, or delete those reports first",
+            )
+        row = session.scalar(
+            select(Shift).where(Shift.company_name == company, Shift.key == shift)
+        )
+        if row:
+            # Cascade: drop the shift's hour-slot presets too. Existing DPR
+            # reports keep their stored hour_slots_json, so no data is lost.
+            for s in session.scalars(
+                select(ShiftPresetSlot).where(
+                    ShiftPresetSlot.company_name == company,
+                    ShiftPresetSlot.shift == shift,
+                )
+            ):
+                session.delete(s)
+            session.delete(row)
+            session.commit()
+    return RedirectResponse(
+        f"/production/shift-presets?company={company}", status_code=303
     )
 
 
 @app.post("/production/shift-presets/{shift}/add")
 async def sp_add(shift: str, request: Request):
-    if shift not in dpr.SHIFT_OPTIONS:
-        raise HTTPException(404, "unknown shift")
     form = await request.form()
     company = (form.get("company") or "").strip()
-    label = (form.get("label") or "").strip()
-    if not (company and label):
-        raise HTTPException(400, "company and label required")
+    from_t = _normalize_time(form.get("from_time"))
+    to_t = _normalize_time(form.get("to_time"))
+    if not company:
+        raise HTTPException(400, "company required")
+    label = _shift_label_from_times(from_t, to_t)
     with _session() as session:
+        if shift not in _shift_keys(session, company):
+            raise HTTPException(404, "unknown shift")
         existing = _shift_load(session, company, shift)
         taken = {s.key for s in existing}
         key = _shift_slug(label, taken)
         max_so = max((s.sort_order for s in existing), default=0)
         session.add(ShiftPresetSlot(
             company_name=company, shift=shift, key=key, label=label,
+            from_time=from_t, to_time=to_t,
             sort_order=max_so + 10,
         ))
+        session.commit()
+    return RedirectResponse(
+        f"/production/shift-presets?company={company}#sec-{shift}", status_code=303
+    )
+
+
+@app.post("/production/shift-presets/{shift}/save-all")
+async def sp_save_all(shift: str, request: Request):
+    """Persist every row's From/To in one transaction. Form fields `slot_id`,
+    `from_time`, `to_time` are parallel lists in document order. Rows whose
+    From and To are both blank are silently skipped (treat as no-op)."""
+    form = await request.form()
+    company = (form.get("company") or "").strip()
+    if not company:
+        raise HTTPException(400, "company required")
+    slot_ids = form.getlist("slot_id")
+    from_raws = form.getlist("from_time")
+    to_raws = form.getlist("to_time")
+    if not (len(slot_ids) == len(from_raws) == len(to_raws)):
+        raise HTTPException(400, "form arrays mismatched")
+    with _session() as session:
+        for sid_raw, ft_raw, tt_raw in zip(slot_ids, from_raws, to_raws):
+            try:
+                sid = int(sid_raw)
+            except (TypeError, ValueError):
+                continue
+            row = session.get(ShiftPresetSlot, sid)
+            if not row or row.company_name != company or row.shift != shift:
+                continue
+            from_t = _normalize_time(ft_raw)
+            to_t = _normalize_time(tt_raw)
+            if not (from_t or to_t):
+                continue
+            row.from_time = from_t
+            row.to_time = to_t
+            row.label = _shift_label_from_times(from_t, to_t)
         session.commit()
     return RedirectResponse(
         f"/production/shift-presets?company={company}#sec-{shift}", status_code=303
@@ -4327,14 +4913,16 @@ async def sp_add(shift: str, request: Request):
 async def sp_edit(shift: str, slot_id: int, request: Request):
     form = await request.form()
     company = (form.get("company") or "").strip()
-    label = (form.get("label") or "").strip()
-    if not label:
-        raise HTTPException(400, "label required")
+    from_t = _normalize_time(form.get("from_time"))
+    to_t = _normalize_time(form.get("to_time"))
+    label = _shift_label_from_times(from_t, to_t)
     with _session() as session:
         row = session.get(ShiftPresetSlot, slot_id)
         if not row or row.company_name != company or row.shift != shift:
             raise HTTPException(404, "slot not found")
         row.label = label
+        row.from_time = from_t
+        row.to_time = to_t
         session.commit()
     return RedirectResponse(
         f"/production/shift-presets?company={company}#sec-{shift}", status_code=303
@@ -4392,11 +4980,11 @@ async def sp_delete(shift: str, slot_id: int, request: Request):
 async def sp_reset(shift: str, request: Request):
     """Wipe all slots for (company, shift) and re-seed from the static
     SHIFT_PRESETS defaults. Useful when the user wants a clean reset."""
-    if shift not in dpr.SHIFT_OPTIONS:
-        raise HTTPException(404, "unknown shift")
     form = await request.form()
     company = (form.get("company") or "").strip()
     with _session() as session:
+        if shift not in _shift_keys(session, company):
+            raise HTTPException(404, "unknown shift")
         for r in session.scalars(
             select(ShiftPresetSlot).where(
                 ShiftPresetSlot.company_name == company, ShiftPresetSlot.shift == shift,
@@ -5082,3 +5670,455 @@ async def pp_toggle(line: str, process_id: int, request: Request):
     return RedirectResponse(
         f"/production/processes/{line}?{qs}#sec-{section}", status_code=303
     )
+
+
+# ---------------------------------------------------------------------------
+# Company aliases (short codes used in the consumable-import spreadsheet)
+# ---------------------------------------------------------------------------
+
+class CompanyAliasIn(BaseModel):
+    code: str
+    company_name: str
+
+
+class CompanyAliasesPayload(BaseModel):
+    aliases: list[CompanyAliasIn]
+
+
+@app.get("/api/company-aliases")
+def api_list_company_aliases():
+    with _session() as session:
+        rows = list(session.scalars(select(CompanyAlias).order_by(CompanyAlias.code)))
+        return {
+            "aliases": [{"code": r.code, "company_name": r.company_name} for r in rows],
+            "companies": _list_companies(session),
+        }
+
+
+@app.put("/api/company-aliases")
+def api_put_company_aliases(payload: CompanyAliasesPayload):
+    with _session() as session:
+        # Replace-all semantics: simpler to reason about than partial upsert.
+        for r in list(session.scalars(select(CompanyAlias))):
+            session.delete(r)
+        session.flush()
+        seen: set[str] = set()
+        for a in payload.aliases:
+            code = (a.code or "").strip().upper()
+            name = (a.company_name or "").strip()
+            if not code or not name or code in seen:
+                continue
+            seen.add(code)
+            session.add(CompanyAlias(code=code, company_name=name))
+        session.commit()
+        return api_list_company_aliases()
+
+
+# ---------------------------------------------------------------------------
+# Consumable import (Excel sheet/table → draft ProductionEntries)
+# ---------------------------------------------------------------------------
+
+def _parse_dmy(raw) -> str | None:
+    """Parse a date header into ISO YYYY-MM-DD. Accepts datetime objects (Excel
+    auto-converted dates) and strings like '1-4-2026', '01/04/26', '1/4/2026'."""
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        return raw.date().isoformat()
+    if isinstance(raw, date):
+        return raw.isoformat()
+    s = str(raw).strip()
+    if not s:
+        return None
+    for sep in ("-", "/", "."):
+        if sep in s:
+            parts = s.split(sep)
+            if len(parts) == 3:
+                try:
+                    d, m, y = (int(p) for p in parts)
+                except ValueError:
+                    return None
+                if y < 100:
+                    y += 2000
+                try:
+                    return date(y, m, d).isoformat()
+                except ValueError:
+                    return None
+    return None
+
+
+def _build_item_voucher_type_map(session: Session, company: str) -> dict[str, str]:
+    """For each consume-stock-item under `company`, find the policy/voucher_type
+    that owns its group (walking ancestrally). Returns {item_name → voucher_type}.
+
+    If multiple policies claim an item, the alphabetically-first voucher_type wins
+    (deterministic) — operators should keep policies non-overlapping anyway.
+    """
+    from ..policy import _descendant_group_names
+    policies = list_policies(session, company)
+    item_to_vt: dict[str, str] = {}
+    items = list(
+        session.scalars(
+            select(StockItem).where(StockItem.company_name == company)
+        )
+    )
+    for policy in sorted(policies, key=lambda p: p.voucher_type):
+        consume_groups = [g.stock_group for g in policy.groups if g.role == "consume"]
+        if not consume_groups:
+            continue
+        expanded = _descendant_group_names(session, company, consume_groups)
+        for it in items:
+            if it.parent in expanded and it.name not in item_to_vt:
+                item_to_vt[it.name] = policy.voucher_type
+    return item_to_vt
+
+
+def _parse_consumable_workbook(
+    raw: bytes, sheet_name: str | None, table_name: str | None
+) -> tuple[list[str], list[list]]:
+    """Read the workbook and return (header_row, data_rows). data_rows are
+    raw cell values (no normalisation), aligned with the header.
+    """
+    from io import BytesIO
+    from openpyxl import load_workbook
+
+    try:
+        wb = load_workbook(BytesIO(raw), data_only=True)
+    except Exception as e:
+        raise HTTPException(400, f"could not read Excel: {e}")
+
+    if sheet_name:
+        if sheet_name not in wb.sheetnames:
+            raise HTTPException(
+                400,
+                f"sheet '{sheet_name}' not found. Sheets in file: {', '.join(wb.sheetnames)}",
+            )
+        ws = wb[sheet_name]
+    else:
+        ws = wb[wb.sheetnames[0]]
+
+    if table_name:
+        # openpyxl exposes named tables (ListObjects) on each worksheet.
+        tables = getattr(ws, "tables", None) or {}
+        if table_name not in tables:
+            available = ", ".join(tables.keys()) or "(none)"
+            raise HTTPException(
+                400,
+                f"table '{table_name}' not found in sheet '{ws.title}'. Tables: {available}",
+            )
+        ref = tables[table_name].ref if hasattr(tables[table_name], "ref") else tables[table_name]
+        cells = ws[ref]
+    else:
+        cells = list(ws.iter_rows())
+
+    rows = [[c.value for c in row] for row in cells]
+    if len(rows) < 2:
+        raise HTTPException(400, "no data rows found in selected range")
+    header = [str(v).strip() if v is not None else "" for v in rows[0]]
+    return header, rows[1:]
+
+
+def _resolve_consumable_columns(header: list[str]) -> tuple[int, int, list[tuple[int, str]]]:
+    """Given the header row, return (item_col, company_col, [(idx, iso_date), ...])."""
+    item_col = company_col = -1
+    for i, h in enumerate(header):
+        norm = h.lower().replace("_", " ").strip()
+        if norm in ("item name", "item", "stock item", "stock item name"):
+            item_col = i
+        elif norm in ("company", "co", "company code"):
+            company_col = i
+    if item_col < 0:
+        raise HTTPException(400, "missing required column 'ITEM NAME'")
+    if company_col < 0:
+        raise HTTPException(400, "missing required column 'Company'")
+    date_cols: list[tuple[int, str]] = []
+    for i, h in enumerate(header):
+        if i in (item_col, company_col):
+            continue
+        iso = _parse_dmy(h)
+        if iso:
+            date_cols.append((i, iso))
+    if not date_cols:
+        raise HTTPException(
+            400,
+            "no date columns recognised — header dates must be in dd-mm-yyyy or dd/mm/yyyy form",
+        )
+    return item_col, company_col, date_cols
+
+
+def _build_consumable_preview(
+    session: Session,
+    header: list[str],
+    data_rows: list[list],
+    from_date: str | None = None,
+    to_date: str | None = None,
+) -> dict:
+    item_col, company_col, date_cols = _resolve_consumable_columns(header)
+    if from_date:
+        date_cols = [(i, d) for (i, d) in date_cols if d >= from_date]
+    if to_date:
+        date_cols = [(i, d) for (i, d) in date_cols if d <= to_date]
+    if (from_date or to_date) and not date_cols:
+        raise HTTPException(400, "no date columns fall within the selected From/To range")
+
+    alias_map = {
+        a.code.upper(): a.company_name
+        for a in session.scalars(select(CompanyAlias))
+    }
+    known_companies = set(_list_companies(session))
+
+    # Cache per-company item→voucher_type maps and item index
+    vt_cache: dict[str, dict[str, str]] = {}
+    item_cache: dict[str, set[str]] = {}
+
+    def _vt_for(company: str) -> dict[str, str]:
+        if company not in vt_cache:
+            vt_cache[company] = _build_item_voucher_type_map(session, company)
+        return vt_cache[company]
+
+    def _items_for(company: str) -> set[str]:
+        if company not in item_cache:
+            item_cache[company] = set(
+                session.scalars(
+                    select(StockItem.name).where(StockItem.company_name == company)
+                )
+            )
+        return item_cache[company]
+
+    matched: list[dict] = []  # one row per (company, date, item) with qty>0
+    errors: list[dict] = []   # unmatched items / unknown companies / orphan policies
+
+    for r_idx, row in enumerate(data_rows, start=2):  # row 1 = header
+        if not row or all(v in (None, "") for v in row):
+            continue
+        item_name = (str(row[item_col]).strip() if row[item_col] is not None else "")
+        code = (str(row[company_col]).strip().upper() if row[company_col] is not None else "")
+        if not item_name and not code:
+            continue
+        if not item_name:
+            errors.append({"row": r_idx, "kind": "missing_item", "code": code})
+            continue
+        if not code:
+            errors.append({"row": r_idx, "kind": "missing_company", "item": item_name})
+            continue
+        company = alias_map.get(code)
+        if not company:
+            errors.append({"row": r_idx, "kind": "unknown_alias", "code": code, "item": item_name})
+            continue
+        if company not in known_companies:
+            errors.append({
+                "row": r_idx, "kind": "alias_targets_unknown_company",
+                "code": code, "item": item_name, "company": company,
+            })
+            continue
+        items = _items_for(company)
+        if item_name not in items:
+            errors.append({
+                "row": r_idx, "kind": "unknown_item",
+                "code": code, "company": company, "item": item_name,
+            })
+            continue
+        vt_map = _vt_for(company)
+        voucher_type = vt_map.get(item_name)
+        if not voucher_type:
+            errors.append({
+                "row": r_idx, "kind": "no_policy_for_item",
+                "code": code, "company": company, "item": item_name,
+            })
+            continue
+        for col_idx, iso_date in date_cols:
+            v = row[col_idx] if col_idx < len(row) else None
+            if v in (None, ""):
+                continue
+            try:
+                qty = float(v)
+            except (TypeError, ValueError):
+                errors.append({
+                    "row": r_idx, "kind": "non_numeric_qty",
+                    "company": company, "item": item_name,
+                    "date": iso_date, "raw": str(v),
+                })
+                continue
+            if qty == 0:
+                continue
+            matched.append({
+                "row": r_idx,
+                "code": code,
+                "company": company,
+                "item": item_name,
+                "date": iso_date,
+                "qty": qty,
+                "voucher_type": voucher_type,
+            })
+
+    # Group matched into entries: (company, date, voucher_type) → [lines]
+    bundles: dict[tuple[str, str, str], list[dict]] = {}
+    for m in matched:
+        key = (m["company"], m["date"], m["voucher_type"])
+        bundles.setdefault(key, []).append(m)
+    grouped = [
+        {
+            "company": k[0],
+            "date": k[1],
+            "voucher_type": k[2],
+            "lines": v,
+            "total_qty": sum(x["qty"] for x in v),
+        }
+        for k, v in sorted(bundles.items())
+    ]
+
+    return {
+        "matched_count": len(matched),
+        "error_count": len(errors),
+        "entry_count": len(grouped),
+        "entries": grouped,
+        "errors": errors,
+    }
+
+
+@app.post("/api/consumable-import/inspect")
+async def api_consumable_import_inspect(
+    file: UploadFile = File(...),
+    sheet_name: str = Form(""),
+    table_name: str = Form(""),
+):
+    """Return the structure of an uploaded workbook so the UI can offer
+    sheet/table/date dropdowns. If sheet_name/table_name are provided, also
+    returns the recognised date columns for that selection."""
+    from io import BytesIO
+    from openpyxl import load_workbook
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "uploaded file is empty")
+    try:
+        wb = load_workbook(BytesIO(raw), data_only=True, read_only=False)
+    except Exception as e:
+        raise HTTPException(400, f"could not read Excel: {e}")
+
+    sheets = list(wb.sheetnames)
+    tables_by_sheet: dict[str, list[str]] = {}
+    for sn in sheets:
+        ws = wb[sn]
+        tables_by_sheet[sn] = list((getattr(ws, "tables", None) or {}).keys())
+
+    date_columns: list[dict] = []
+    resolved_sheet = sheet_name or (sheets[0] if sheets else "")
+    if resolved_sheet:
+        try:
+            header, _rows = _parse_consumable_workbook(
+                raw, resolved_sheet, table_name or None
+            )
+            for i, h in enumerate(header):
+                iso = _parse_dmy(h)
+                if iso:
+                    date_columns.append({"label": str(h), "date": iso})
+        except HTTPException:
+            # Header may be unparseable until a table is chosen — that's fine,
+            # frontend just won't show date options yet.
+            pass
+
+    return {
+        "sheets": sheets,
+        "tables_by_sheet": tables_by_sheet,
+        "date_columns": date_columns,
+        "resolved_sheet": resolved_sheet,
+    }
+
+
+@app.post("/api/consumable-import/preview")
+async def api_consumable_import_preview(
+    file: UploadFile = File(...),
+    sheet_name: str = Form(""),
+    table_name: str = Form(""),
+    from_date: str = Form(""),
+    to_date: str = Form(""),
+):
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "uploaded file is empty")
+    with _session() as session:
+        header, data_rows = _parse_consumable_workbook(raw, sheet_name or None, table_name or None)
+        return _build_consumable_preview(
+            session, header, data_rows, from_date or None, to_date or None
+        )
+
+
+@app.post("/api/consumable-import/commit")
+async def api_consumable_import_commit(
+    file: UploadFile = File(...),
+    sheet_name: str = Form(""),
+    table_name: str = Form(""),
+    from_date: str = Form(""),
+    to_date: str = Form(""),
+):
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "uploaded file is empty")
+    with _session() as session:
+        header, data_rows = _parse_consumable_workbook(raw, sheet_name or None, table_name or None)
+        preview = _build_consumable_preview(
+            session, header, data_rows, from_date or None, to_date or None
+        )
+
+        # Cache per-company stock items for rate/uom defaults
+        items_by_company: dict[str, dict[str, StockItem]] = {}
+
+        created_ids: list[int] = []
+        for bundle in preview["entries"]:
+            company = bundle["company"]
+            voucher_type = bundle["voucher_type"]
+            entry_date = bundle["date"]
+            policy = get_policy(session, company, voucher_type)
+            if policy is None:
+                # Should not happen — preview already filtered, but stay defensive.
+                continue
+            entry = ProductionEntry(
+                remote_id="pending",
+                company_name=company,
+                entry_date=entry_date,
+                voucher_type=voucher_type,
+                status="draft",
+                narration=f"Imported consumables · {entry_date}",
+            )
+            session.add(entry)
+            session.flush()
+            entry.remote_id = generate_remote_id(entry_date, voucher_type, entry.id)
+            if company not in items_by_company:
+                items_by_company[company] = {
+                    it.name: it
+                    for it in session.scalars(
+                        select(StockItem).where(StockItem.company_name == company)
+                    )
+                }
+            by_name = items_by_company[company]
+            for line in bundle["lines"]:
+                item = by_name.get(line["item"])
+                uom = (item.closing_uom or item.base_units or "No.") if item else "No."
+                rate = (item.closing_rate if item else 0.0) or 0.0
+                qty = float(line["qty"])
+                amount = round(qty * rate, 2)
+                godown = default_godown_for_role(policy, "consume")
+                session.add(
+                    ProductionEntryLine(
+                        entry_id=entry.id,
+                        role="consume",
+                        item_name=line["item"],
+                        quantity=qty,
+                        uom=uom,
+                        rate=rate,
+                        amount=amount,
+                        godown=godown,
+                        opening_stock_snapshot=item.closing_quantity if item else 0.0,
+                        description=None,
+                    )
+                )
+            created_ids.append(entry.id)
+
+        session.commit()
+        return {
+            "created_entry_ids": created_ids,
+            "created_count": len(created_ids),
+            "error_count": preview["error_count"],
+            "errors": preview["errors"],
+        }

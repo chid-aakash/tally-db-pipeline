@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% block brand_title %}Tally <span class="accent">Production</span>{% endblock %}
 {% block title %}Model Specs{% endblock %}
 
 {% block content %}
@@ -102,7 +103,7 @@
         + Add Model
       </button>
       {% if edit_lock_enabled %}
-        <span class="muted" style="font-size:.78rem;">🔒 Password required for Add / Edit / Delete</span>
+        <span class="muted" style="font-size:.78rem;">🔒 Password required for Add / Edit / Delete / Upload / Sync</span>
       {% endif %}
     </div>
   </div>
@@ -132,7 +133,8 @@
     </form>
   {% else %}
     <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-      <form method="post" action="/production/models/sync" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:0;">
+      <form method="post" action="/production/models/sync" id="sync-form" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:0;">
+        <input type="hidden" name="edit_password" value="">
         <label style="font-size:.86rem;">Sheet name
           <input name="worksheet_name" type="text" value="{{ ms_worksheet_default }}" style="padding:4px 8px; width: 140px;">
         </label>
@@ -166,7 +168,8 @@
   <p class="muted" style="margin:0 0 10px; font-size:.86rem;">
     Export your OneDrive workbook as <code>.xlsx</code> or <code>.csv</code>. Required columns: <strong>Customer</strong>, <strong>Model</strong>, <strong>Length</strong>, <strong>Width</strong>, <strong>Thickness</strong>. Rows without a Customer value are <strong>skipped with an error</strong>. Any column whose header is <code>&lt;number&gt; MM</code> becomes a hole-diameter column.
   </p>
-  <form method="post" action="/production/models/upload" enctype="multipart/form-data" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+  <form method="post" action="/production/models/upload" id="upload-form" enctype="multipart/form-data" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+    <input type="hidden" name="edit_password" value="">
     <label style="font-size:.86rem;">Sheet name
       <input name="worksheet_name" type="text" value="{{ ms_worksheet_default }}" placeholder="(blank = active sheet)" style="padding:4px 8px; width: 140px;">
     </label>
@@ -464,6 +467,22 @@
       });
     });
   });
+  function gateForm(form, label) {
+    if (!form) return;
+    form.addEventListener("submit", function (ev) {
+      if (form.dataset.authorized === "1") return;
+      ev.preventDefault();
+      requirePassword(label, function (pw) {
+        var pwField = form.querySelector('input[name="edit_password"]');
+        if (pwField) pwField.value = pw;
+        form.dataset.authorized = "1";
+        form.submit();
+      });
+    });
+  }
+  gateForm(document.getElementById("upload-form"), "upload model specs");
+  gateForm(document.getElementById("sync-form"), "sync model specs from OneDrive");
+
   document.querySelectorAll(".delete-form").forEach(function (form) {
     form.addEventListener("submit", function (ev) {
       var pwField = form.querySelector('input[name="edit_password"]');

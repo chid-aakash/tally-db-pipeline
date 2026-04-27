@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% block brand_title %}Tally <span class="accent">Production</span>{% endblock %}
 {% block title %}Production Review{% endblock %}
 {% block content %}
 <style>
@@ -8,8 +9,19 @@
   }
   .review-head h1 { margin: 0; }
   .controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-  .controls label { margin: 0; }
+  .controls label { margin: 0; font-size: .9rem; color: var(--ink-soft); }
   .controls input, .controls select { width: auto; padding: 6px 10px; }
+  .seg-toggle {
+    display: inline-flex; gap: 4px; align-items: center; margin-left: 8px;
+  }
+  .seg-toggle button {
+    background: transparent; border: 1px solid var(--line); color: var(--ink-soft);
+    padding: 4px 10px; font-size: .85rem; border-radius: 6px; cursor: pointer;
+    box-shadow: none; transition: background var(--t-fast), color var(--t-fast);
+  }
+  .seg-toggle button:hover { background: var(--navy-50); color: var(--navy-800); }
+  .seg-toggle button:disabled { opacity: .35; cursor: not-allowed; }
+  .seg-count { font-weight: 600; color: var(--navy-900); padding: 0 6px; }
 
   .board {
     background: var(--surface);
@@ -23,12 +35,23 @@
     background: linear-gradient(135deg, var(--navy-900), var(--navy-700));
     color: #fff; padding: 10px 16px;
     display: flex; justify-content: space-between; align-items: center;
+    flex-wrap: wrap; gap: 10px;
     font-weight: 600; letter-spacing: 0.3px;
   }
-  .board-title .session-hrs {
-    font-size: 0.85rem; opacity: 0.9; background: rgba(255,255,255,0.12);
-    padding: 2px 10px; border-radius: 999px;
+  .board-title .seg-pill {
+    font-size: 0.8rem; opacity: 0.9; background: rgba(255,255,255,0.12);
+    padding: 2px 10px; border-radius: 999px; font-weight: 500;
   }
+  .board-title .until-picker {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: .85rem; opacity: 0.95;
+  }
+  .board-title .until-picker select {
+    padding: 3px 8px; font-size: .85rem; border-radius: 4px;
+    background: rgba(255,255,255,0.12); color: #fff;
+    border: 1px solid rgba(255,255,255,0.25);
+  }
+  .board-title .until-picker select option { color: var(--ink); }
 
   .review-table { width: 100%; border-collapse: collapse; }
   .review-table th, .review-table td {
@@ -73,12 +96,12 @@
   <div class="controls">
     <label for="reviewDate">Date</label>
     <input type="date" id="reviewDate" value="{{ review_date }}">
-    <label for="cutoffSel">Until</label>
-    <select id="cutoffSel">
-      {% for opt in cutoff_options %}
-      <option value="{{ opt.key }}" {% if opt.key == cutoff_key %}selected{% endif %}>{{ opt.display }}</option>
-      {% endfor %}
-    </select>
+    <span class="seg-toggle">
+      <label>Segments</label>
+      <button type="button" id="segRemove" {% if segments <= 1 %}disabled{% endif %}>−</button>
+      <span class="seg-count" id="segCount">{{ segments }}</span>
+      <button type="button" id="segAdd" {% if segments >= 3 %}disabled{% endif %}>+</button>
+    </span>
   </div>
 </div>
 
@@ -107,10 +130,30 @@
   {%- endif -%}
 {%- endmacro %}
 
+{% for s_idx in range(segments) %}
+{% set per_line = seg_totals[s_idx] %}
+{% set f_key = chosen_ranges[s_idx][0] %}
+{% set u_key = chosen_ranges[s_idx][1] %}
 <div class="board">
   <div class="board-title">
-    <span>AAPL — Line Review Board</span>
-    <span class="session-hrs">{{ cutoff_display }}</span>
+    <span>
+      AAPL — Line Review Board
+      {% if segments > 1 %}<span class="seg-pill">Segment {{ s_idx + 1 }} of {{ segments }}</span>{% endif %}
+    </span>
+    <span class="until-picker">
+      From
+      <select class="range-sel" data-seg="{{ s_idx + 1 }}" data-side="from">
+        {% for opt in slot_options %}
+        <option value="{{ opt.key }}" {% if opt.key == f_key %}selected{% endif %}>{{ opt.display }}</option>
+        {% endfor %}
+      </select>
+      Until
+      <select class="range-sel" data-seg="{{ s_idx + 1 }}" data-side="until">
+        {% for opt in slot_options %}
+        <option value="{{ opt.key }}" {% if opt.key == u_key %}selected{% endif %}>{{ opt.display }}</option>
+        {% endfor %}
+      </select>
+    </span>
   </div>
   <div class="table-wrap">
     <table class="review-table">
@@ -123,14 +166,12 @@
           <th>Rej %</th>
           <th>Rework</th>
           <th>Rework %</th>
-          <th>Quality</th>
-          <th>Safety</th>
         </tr>
       </thead>
       <tbody>
         {% set tot = namespace(input=0, actual=0, rej=0, rework=0) %}
         {% for line in lines %}
-        {% set src = prefill.get(line, {}) %}
+        {% set src = per_line.get(line, {}) %}
         {% set inp = src.get('input', 0) %}
         {% set rej = src.get('rej', 0) %}
         {% set rwk = src.get('rework', 0) %}
@@ -141,7 +182,7 @@
         {% set tot.actual = tot.actual + act %}
         {% set tot.rej = tot.rej + rej %}
         {% set tot.rework = tot.rework + rwk %}
-        <tr data-line="{{ line }}">
+        <tr data-line="{{ line }}" data-seg="{{ s_idx + 1 }}">
           <td class="line-name">{{ line }}</td>
           <td>{{ num_link(inp, line) }}</td>
           <td>{{ num_link(act, line) }}</td>
@@ -149,8 +190,6 @@
           <td>{{ num_link(rej_pct, line, fmt='pct', cls='pct') }}</td>
           <td>{{ num_link(rwk, line) }}</td>
           <td>{{ num_link(rwk_pct, line, fmt='pct', cls='pct') }}</td>
-          <td><span class="check-cell"><input type="checkbox" data-field="quality" data-line="{{ line }}"></span></td>
-          <td><span class="check-cell"><input type="checkbox" data-field="safety" data-line="{{ line }}"></span></td>
         </tr>
         {% endfor %}
         {% set t_rej_pct = (tot.rej / tot.input * 100) if tot.input else 0 %}
@@ -163,42 +202,53 @@
           <td>{{ "%.1f%%"|format(t_rej_pct) if tot.input else '—' }}</td>
           <td>{{ tot.rework|int if tot.rework else '—' }}</td>
           <td>{{ "%.1f%%"|format(t_rwk_pct) if tot.input else '—' }}</td>
-          <td>—</td>
-          <td>—</td>
         </tr>
       </tbody>
     </table>
   </div>
 </div>
+{% endfor %}
 {% endif %}
 
 <script>
 (function () {
   const dateInput = document.getElementById("reviewDate");
-  const cutoffSel = document.getElementById("cutoffSel");
+  const segCountEl = document.getElementById("segCount");
+  const segAddBtn = document.getElementById("segAdd");
+  const segRemoveBtn = document.getElementById("segRemove");
 
-  function reload() {
-    const d = dateInput.value;
-    const c = cutoffSel ? cutoffSel.value : "";
+  function currentParams() {
     const params = new URLSearchParams();
-    if (d) params.set("date", d);
-    if (c) params.set("cutoff", c);
+    if (dateInput.value) params.set("date", dateInput.value);
+    const segs = parseInt(segCountEl.textContent, 10) || 1;
+    params.set("segments", String(segs));
+    document.querySelectorAll(".range-sel").forEach(sel => {
+      const idx = sel.dataset.seg;
+      const side = sel.dataset.side;  // "from" | "until"
+      if (idx && side && sel.value) params.set(side + idx, sel.value);
+    });
+    return params;
+  }
+
+  function reload(extra) {
+    const params = currentParams();
+    if (extra) {
+      for (const [k, v] of Object.entries(extra)) params.set(k, v);
+    }
     window.location.href = "/production/review?" + params.toString();
   }
-  dateInput.addEventListener("change", reload);
-  if (cutoffSel) cutoffSel.addEventListener("change", reload);
 
-  // Quality / Safety checkboxes — local-only, persisted by date+cutoff.
-  const KEY = "prodReview:" + (dateInput.value || "today") + ":" + (cutoffSel ? cutoffSel.value : "");
-  let saved = {};
-  try { saved = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch (e) {}
-  document.querySelectorAll('input[type="checkbox"][data-field]').forEach(cb => {
-    const k = cb.dataset.line + "|" + cb.dataset.field;
-    cb.checked = !!saved[k];
-    cb.addEventListener("change", () => {
-      saved[k] = cb.checked;
-      try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch (e) {}
-    });
+  dateInput.addEventListener("change", () => reload());
+  document.querySelectorAll(".range-sel").forEach(sel => {
+    sel.addEventListener("change", () => reload());
+  });
+  segAddBtn.addEventListener("click", () => {
+    const next = Math.min(3, (parseInt(segCountEl.textContent, 10) || 1) + 1);
+    reload({ segments: String(next) });
+  });
+  segRemoveBtn.addEventListener("click", () => {
+    const next = Math.max(1, (parseInt(segCountEl.textContent, 10) || 1) - 1);
+    reload({ segments: String(next) });
   });
 })();
 </script>

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% block brand_title %}Tally <span class="accent">Production</span>{% endblock %}
 {% block title %}Process Configuration{% endblock %}
 
 {% block content %}
@@ -13,7 +14,11 @@
   .pp-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); border-color: rgba(30,58,138,0.2); }
   .pp-card h3 { margin: 0 0 6px; color: var(--navy-900); font-size: 1.1rem; }
   .pp-counts { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; font-size: .88rem; color: var(--ink-soft); margin: 8px 0 12px; }
+  .pp-counts > span { white-space: nowrap; }
   .pp-counts .num { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--navy-800); }
+  .pp-split { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+  .pp-split > .pp-text { flex: 1 1 0; min-width: 0; }
+  .pp-split > .pp-side { flex: 0 0 auto; text-align: right; }
   .pp-empty { color: var(--muted); font-style: italic; }
   .pp-filter { display: flex; gap: 10px; align-items: end; margin-bottom: 16px; }
 </style>
@@ -61,17 +66,17 @@
   <div style="margin-top:18px; padding-top:18px; border-top:1px dashed var(--line); display:grid; grid-template-columns: 1fr 1fr; gap: 14px;">
     <a class="pp-card" href="/production/shift-presets?company={{ selected_company }}"
        style="text-decoration:none; color:inherit; display:block; background:linear-gradient(135deg, #fff4e6, #fff); border-color:rgba(249,115,22,.18);">
-      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
-        <div>
+      <div class="pp-split">
+        <div class="pp-text">
           <h3 style="margin:0 0 4px;">Shift Presets</h3>
           <p class="muted" style="margin:0; font-size:.88rem;">
             Hour-column slots used when creating a new DPR. Edit per shift.
           </p>
         </div>
-        <div style="text-align:right;">
+        <div class="pp-side">
           <div class="pp-counts" style="margin:0;">
-            {% for sh in shift_options %}
-              <span>{{ sh }}</span><span class="num">{{ shift_counts.get(sh, 0) }}</span>
+            {% for k, n in shift_options %}
+              <span>{{ n }}</span><span class="num">{{ shift_counts.get(k, 0) }}</span>
             {% endfor %}
           </div>
           <div style="margin-top:6px; font-size:.85rem; color:var(--orange-500); font-weight:600;">Open shifts →</div>
@@ -81,14 +86,14 @@
 
     <a class="pp-card" href="/production/process-catalog?company={{ selected_company }}"
        style="text-decoration:none; color:inherit; display:block; background:linear-gradient(135deg, var(--navy-50), #fff); border-color:rgba(30,58,138,.15);">
-      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
-        <div>
+      <div class="pp-split">
+        <div class="pp-text">
           <h3 style="margin:0 0 4px;">Process Catalog</h3>
           <p class="muted" style="margin:0; font-size:.88rem;">
             Reusable label / stage / group combos. Define once, apply to any line.
           </p>
         </div>
-        <div style="text-align:right;">
+        <div class="pp-side">
           {% if catalog_total == 0 %}
           <p class="pp-empty" style="margin:0;">Empty. Click to add.</p>
           {% else %}
@@ -105,14 +110,14 @@
 
     <a class="pp-card" href="/production/models?company={{ selected_company }}"
        style="text-decoration:none; color:inherit; display:block; background:linear-gradient(135deg, #ecfdf5, #fff); border-color:rgba(16,185,129,.2);">
-      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
-        <div>
+      <div class="pp-split">
+        <div class="pp-text">
           <h3 style="margin:0 0 4px;">Model Specs</h3>
           <p class="muted" style="margin:0; font-size:.88rem;">
             L × W × thickness and burner-hole geometry per model. Drives scrap weight on the SJ - LINE voucher. Bulk-upload from your OneDrive sheet.
           </p>
         </div>
-        <div style="text-align:right;">
+        <div class="pp-side">
           <div style="margin-top:6px; font-size:.85rem; color:#047857; font-weight:600;">Open specs →</div>
         </div>
       </div>

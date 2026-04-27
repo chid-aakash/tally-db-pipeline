@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% block brand_title %}Tally <span class="accent">Production</span>{% endblock %}
 {% block title %}Avinash's Line Production Report{% endblock %}
 
 {% block content %}
@@ -139,7 +140,7 @@
       <label>
         <span>Shift</span>
         <select name="shift" required>
-          {% for s in shift_options %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+          {% for k, n in shift_options %}<option value="{{ k }}">{{ n }}</option>{% endfor %}
         </select>
       </label>
       <label>
@@ -195,144 +196,7 @@
   </script>
 </div>
 
-<div class="card">
-  <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
-    <h2 style="margin:0; font-size:1.05rem; color:var(--navy-900);">Recent reports</h2>
-    <div style="display:flex; gap:14px; align-items:end; flex-wrap:wrap;">
-      {% if draft_count > 0 %}
-        <button type="button" id="bulk-del-btn"
-                style="height:40px; padding:0 16px; background:#fff; color:#b91c1c;
-                       border:1px solid #fecaca; border-radius:6px; font-weight:600;
-                       cursor:pointer; display:inline-flex; align-items:center; gap:6px;">
-          🗑 Delete all drafts ({{ draft_count }}{% if filter_date %} on this date{% endif %})
-        </button>
-      {% endif %}
-      <form method="get" action="/production/daily-report" class="dpr-filter">
-        <label>
-          <span>Date</span>
-          <input type="date" name="date" value="{{ filter_date }}">
-        </label>
-        <button type="submit">Filter</button>
-      </form>
-    </div>
-  </div>
-
-  <table class="dpr-table" style="margin-top:12px;">
-    <thead>
-      <tr><th>Date</th><th>Shift</th><th>Line</th><th>Customer</th><th>Model</th><th>Status</th><th>Updated</th><th style="text-align:right;">Actions</th></tr>
-    </thead>
-    <tbody>
-      {% for r in reports %}
-      <tr>
-        <td>{{ r.report_date|dmy }}</td>
-        <td>{{ r.shift }}</td>
-        <td>{{ r.line }}</td>
-        <td>{{ r.company_name or "—" }}</td>
-        <td>{{ r.model or "—" }}</td>
-        <td><span class="pill pill-{{ r.status }}">{{ r.status }}</span></td>
-        <td class="muted" style="font-size:.82rem;">{{ r.updated_at.strftime("%d-%m %H:%M") if r.updated_at else "—" }}</td>
-        <td style="text-align:right; white-space:nowrap;">
-          <div class="row-actions">
-            {% if r.status in ('draft', 'saved') %}
-              <a class="icon-action" href="/production/daily-report/{{ r.id }}/edit" title="Edit">✏️</a>
-            {% endif %}
-            <a class="icon-action" href="/production/daily-report/{{ r.id }}" title="Summary / preview">👁</a>
-            {% if r.status == 'draft' %}
-              <button type="button" class="icon-action danger del-btn"
-                      title="Delete draft"
-                      data-id="{{ r.id }}"
-                      data-date="{{ r.report_date|dmy }}"
-                      data-shift="{{ r.shift }}"
-                      data-line="{{ r.line }}"
-                      data-customer="{{ r.company_name or '—' }}"
-                      data-model="{{ r.model or '—' }}"
-                      data-updated="{{ r.updated_at.strftime('%d-%m %H:%M') if r.updated_at else '—' }}">🗑</button>
-            {% endif %}
-          </div>
-        </td>
-      </tr>
-      {% else %}
-      <tr><td colspan="8" style="text-align:center; color:var(--muted); padding:24px;">No reports yet. Create one above.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
+<div class="card" style="text-align:center;">
+  <a href="/production/recent-reports" class="btn btn-secondary">View recent production reports →</a>
 </div>
-
-<!-- Delete confirmation modal — shows the report's key fields before destroying it. -->
-<dialog id="dpr-del-dialog">
-  <form method="post" id="dpr-del-form">
-    <div class="ddm-head">
-      <h3>🗑 Delete this draft DPR?</h3>
-    </div>
-    <div class="ddm-body">
-      <p style="margin:0 0 10px; color:var(--ink-soft);">
-        This will permanently remove the draft and all its hourly cells, hour-models, and rework data. This cannot be undone.
-      </p>
-      <dl>
-        <dt>Date</dt><dd id="ddm-date">—</dd>
-        <dt>Shift / Line</dt><dd id="ddm-shift-line">—</dd>
-        <dt>Customer</dt><dd id="ddm-customer">—</dd>
-        <dt>Model</dt><dd id="ddm-model">—</dd>
-        <dt>Last updated</dt><dd id="ddm-updated" class="muted">—</dd>
-      </dl>
-    </div>
-    <div class="ddm-foot">
-      <button type="button" class="cancel" id="ddm-cancel">Cancel</button>
-      <button type="submit" class="confirm">Delete draft</button>
-    </div>
-  </form>
-</dialog>
-
-<!-- Bulk delete-all-drafts modal. -->
-<dialog id="dpr-bulk-del-dialog" style="border:1px solid var(--line); border-radius:12px; padding:0; width:min(440px, 92vw); box-shadow:0 20px 50px rgba(0,0,0,.18);">
-  <form method="post" action="/production/daily-report/delete-all-drafts">
-    {% if filter_date %}<input type="hidden" name="date" value="{{ filter_date }}">{% endif %}
-    <div class="ddm-head">
-      <h3>🗑 Delete all draft DPRs?</h3>
-    </div>
-    <div class="ddm-body">
-      <p style="margin:0 0 10px;">
-        This will permanently delete <strong>{{ draft_count }}</strong> draft DPR{{ '' if draft_count == 1 else 's' }}
-        for <strong>{{ tally_company_name }}</strong>{% if filter_date %} on <strong>{{ filter_date }}</strong>{% endif %}.
-        Submitted reports will be left untouched.
-      </p>
-      <p style="margin:0; color:#991b1b; font-size:.86rem;">
-        All hourly cells, hour-models, and rework data attached to these drafts go with them. This cannot be undone.
-      </p>
-    </div>
-    <div class="ddm-foot">
-      <button type="button" class="cancel" id="ddm-bulk-cancel">Cancel</button>
-      <button type="submit" class="confirm">Delete {{ draft_count }} draft{{ '' if draft_count == 1 else 's' }}</button>
-    </div>
-  </form>
-</dialog>
-
-<script>
-(function () {
-  var bulkDlg = document.getElementById("dpr-bulk-del-dialog");
-  var bulkBtn = document.getElementById("bulk-del-btn");
-  var bulkCancel = document.getElementById("ddm-bulk-cancel");
-  if (bulkBtn && bulkDlg) {
-    bulkBtn.addEventListener("click", function () { bulkDlg.showModal(); });
-    bulkCancel.addEventListener("click", function () { bulkDlg.close(); });
-  }
-  var dlg = document.getElementById("dpr-del-dialog");
-  var form = document.getElementById("dpr-del-form");
-  var cancelBtn = document.getElementById("ddm-cancel");
-  cancelBtn.addEventListener("click", function () { dlg.close(); });
-  document.querySelectorAll(".del-btn").forEach(function (btn) {
-    btn.addEventListener("click", function () {
-      var id = btn.getAttribute("data-id");
-      form.action = "/production/daily-report/" + id + "/delete";
-      document.getElementById("ddm-date").textContent = btn.getAttribute("data-date") || "—";
-      document.getElementById("ddm-shift-line").textContent =
-        (btn.getAttribute("data-shift") || "—") + "  ·  Line " + (btn.getAttribute("data-line") || "—");
-      document.getElementById("ddm-customer").textContent = btn.getAttribute("data-customer") || "—";
-      document.getElementById("ddm-model").textContent = btn.getAttribute("data-model") || "—";
-      document.getElementById("ddm-updated").textContent = btn.getAttribute("data-updated") || "—";
-      dlg.showModal();
-    });
-  });
-})();
-</script>
 {% endblock %}

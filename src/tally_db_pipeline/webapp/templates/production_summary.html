@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% block brand_title %}Tally <span class="accent">Production</span>{% endblock %}
 {% block title %}Daily Production Report — {{ report.report_date|dmy }} {{ report.shift }} L{{ report.line }} {{ report.model }}{% endblock %}
 
 {% block content %}
@@ -102,7 +103,7 @@
   {% endif %}
   <div class="paper-head">
     <div class="brand">
-      {% if company_logo %}<img src="{{ company_logo }}" alt="{{ company_clean or report.company_name }}">{% else %}<span>{{ company_clean or report.company_name }}</span>{% endif %}
+      {% if company_logo %}<img src="{{ company_logo }}" alt="{{ report.company_name|co_short }}">{% else %}<span>{{ report.company_name|co_short }}</span>{% endif %}
     </div>
     <div class="title">Daily Production Report<span class="sub">Line {{ report.line }}</span></div>
     <div class="doc">

@@ -162,8 +162,14 @@
   </div>
 
   <div style="margin-top: 18px;">
-    <h3 style="margin-bottom:6px;">Narration that will be posted</h3>
+    <h3 style="margin-bottom:6px;">Narration that will be posted to Tally</h3>
     <pre style="background:#f9fafb; border:1px solid var(--line); border-radius:8px; padding:12px; font-size:.82rem; white-space:pre-wrap; line-height:1.45;">{{ result.voucher.narration }}</pre>
+    <p class="muted" style="font-size:.78rem; margin:6px 0 0;">Tally renders the narration on a single line in the voucher view, so we keep this short. Full per-model breakdown is below for your reference.</p>
+  </div>
+
+  <div style="margin-top: 18px;">
+    <h3 style="margin-bottom:6px;">Detailed breakdown (on-screen reference)</h3>
+    <pre style="background:#f9fafb; border:1px solid var(--line); border-radius:8px; padding:12px; font-size:.82rem; white-space:pre-wrap; line-height:1.45;">{{ result.narration_detail }}</pre>
   </div>
 
   {% if result.missing_specs %}
@@ -197,7 +203,8 @@
     <div style="display:flex; gap:18px; align-items:end; flex-wrap:wrap;">
       <div>
         <label style="display:block; font-size:.82rem; color:var(--ink-soft);">Scrap rate (₹/Kg)</label>
-        <input type="number" name="scrap_rate" step="0.01" value="{{ '%.2f' % scrap_rate }}" required>
+        <input type="number" id="lp-scrap-rate" name="scrap_rate" step="0.01" value="{{ '%.2f' % scrap_rate }}" required>
+        <div class="muted" style="font-size:.75rem; margin-top:4px;">Press Enter or Tab out to refresh the preview with this rate.</div>
       </div>
       <div>
         <strong>Plain glass scrap:</strong> {{ '%.2f' % result.plain_scrap_kg }} Kg<br>
@@ -295,6 +302,25 @@
       });
       cancelBtn.addEventListener("click", function () { dlg.close(); });
       confirmBtn.addEventListener("click", function () { form.submit(); });
+
+      // Re-render preview with the new rate so on-screen amounts match what
+      // will be posted. Server-rendered tables use the scrap_rate query
+      // param; without the reload, typing in the box does nothing visible
+      // until submit.
+      if (rateInput) {
+        var initialRate = rateInput.value;
+        function reloadWithRate() {
+          var v = (rateInput.value || "").trim();
+          if (!v || v === initialRate) return;
+          var u = new URL(window.location.href);
+          u.searchParams.set("scrap_rate", v);
+          window.location.href = u.toString();
+        }
+        rateInput.addEventListener("change", reloadWithRate);
+        rateInput.addEventListener("keydown", function (e) {
+          if (e.key === "Enter") { e.preventDefault(); reloadWithRate(); }
+        });
+      }
     })();
   </script>
 {% endif %}

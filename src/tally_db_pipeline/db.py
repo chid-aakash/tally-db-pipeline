@@ -72,10 +72,10 @@ def ensure_runtime_schema() -> None:
             if "default_godown" not in co_cols:
                 conn.execute(text("ALTER TABLE companies ADD COLUMN default_godown VARCHAR(255)"))
         inspector = inspect(conn)
-        if inspector.has_table("production_entry_lines"):
-            pel_cols = {c["name"] for c in inspector.get_columns("production_entry_lines")}
+        if inspector.has_table("consumption_entry_lines"):
+            pel_cols = {c["name"] for c in inspector.get_columns("consumption_entry_lines")}
             if "description" not in pel_cols:
-                conn.execute(text("ALTER TABLE production_entry_lines ADD COLUMN description TEXT"))
+                conn.execute(text("ALTER TABLE consumption_entry_lines ADD COLUMN description TEXT"))
 
 
 def _needs_company_scope_rebuild(conn, table_name: str) -> bool:

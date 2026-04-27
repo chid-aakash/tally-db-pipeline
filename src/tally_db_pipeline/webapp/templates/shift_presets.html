@@ -1,9 +1,10 @@
 {% extends "base.html" %}
+{% block brand_title %}Tally <span class="accent">Production</span>{% endblock %}
 {% block title %}Shift Presets{% endblock %}
 
 {% block content %}
 <style>
-  main { max-width: 1100px; }
+  main { max-width: 1200px; }
   .sp-section { margin-top: 18px; }
   .sp-head {
     display: flex; align-items: center; justify-content: space-between;
@@ -16,6 +17,7 @@
   .sp-table th { background: var(--surface-2); font-weight: 600; color: var(--ink-soft); font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
   .sp-table tr:last-child td { border-bottom: none; }
   .sp-key { display: inline-block; padding: 2px 8px; border-radius: 999px; background: #f3f4f6; color: var(--ink-soft); font-size: .76rem; font-weight: 600; }
+  .sp-preview { color: var(--navy-800); font-weight: 600; font-size: .88rem; }
   .sp-mini-btn {
     background: transparent; border: 1px solid var(--line); color: var(--ink-soft);
     padding: 4px 8px; font-size: .8rem; border-radius: 6px; cursor: pointer; box-shadow: none;
@@ -23,94 +25,323 @@
   }
   .sp-mini-btn:hover { background: var(--navy-50); border-color: var(--navy-700); color: var(--navy-800); transform: none; filter: none; box-shadow: none; }
   .sp-mini-btn.danger:hover { background: #fee2e2; border-color: #dc2626; color: #991b1b; }
+  .sp-bump {
+    padding: 3px 6px; font-size: .72rem; line-height: 1;
+    border: 1px solid var(--line); border-radius: 4px; background: #fff;
+    color: var(--ink-soft); cursor: pointer;
+  }
+  .sp-bump:hover { background: var(--navy-50); border-color: var(--navy-700); color: var(--navy-800); }
+  .sp-bump:disabled { opacity: .4; cursor: not-allowed; }
+  .sp-link-btn { display: inline-flex; align-items: center; justify-content: center; padding: 4px 5px; }
+  .sp-link-btn svg { display: block; }
+  .sp-edit-form {
+    display: flex; gap: 6px; align-items: center; margin: 0; flex-wrap: wrap;
+  }
+  .sp-edit-form input[type="time"] {
+    padding: 3px 6px; font-size: .85rem; width: 110px;
+  }
+  .sp-edit-form .sep { color: var(--ink-soft); font-size: .8rem; }
   .sp-add-form {
     background: #f9fafb; border: 1px solid var(--line); border-top: none;
     padding: 12px 14px; border-radius: 0 0 8px 8px;
-    display: grid; grid-template-columns: 2fr auto; gap: 10px; align-items: end;
+    display: flex; flex-wrap: wrap; gap: 12px; align-items: end;
   }
-  .sp-add-form label { margin: 0; }
-  .sp-add-form input { padding: 6px 8px; font-size: .9rem; }
-  .sp-add-form button { padding: 7px 14px; font-size: .9rem; }
+  .sp-add-form label { margin: 0; display: flex; flex-direction: column; gap: 4px; font-size: .85rem; }
+  .sp-add-form input[type="time"] { padding: 6px 8px; font-size: .9rem; width: 130px; }
+  .sp-add-form .sp-from-cell { display: flex; gap: 4px; align-items: center; }
+  .sp-add-form button[type="submit"] { padding: 7px 14px; font-size: .9rem; }
+  .sp-hint { color: var(--ink-soft); font-size: .78rem; }
+  /* Collapsible per-shift sections */
+  details.sp-section { padding: 0; }
+  details.sp-section > summary.sp-head {
+    list-style: none; cursor: pointer;
+  }
+  details.sp-section > summary.sp-head::-webkit-details-marker { display: none; }
+  .sp-disclose {
+    display: inline-block; margin-right: 8px; color: var(--ink-soft);
+    font-size: .85rem; transition: transform .15s ease;
+  }
+  details.sp-section:not([open]) > summary.sp-head .sp-disclose {
+    transform: rotate(-90deg);
+  }
+  details.sp-section:not([open]) > summary.sp-head {
+    border-radius: 8px; border-bottom: 1px solid var(--line);
+  }
+  .sp-toolbar { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
 </style>
 
 <div class="card">
   <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
     <div>
-      <h1 style="margin:0">Shift Presets</h1>
-      <p class="muted" style="margin:4px 0 0">{{ company }} — hour-column slots used when a new Daily Production Report is created. Edit the label, reorder, add or delete. Existing reports keep their original slots even if presets change later.</p>
+      <h1 style="margin:0">Shifts &amp; Hour Presets</h1>
+      <p class="muted" style="margin:4px 0 0">{{ company }} — manage shifts (count and names) and the hour-column slots used when a new Daily Production Report is created. Set From/To for each interval. Leave <b>To</b> blank to mean <i>"Before From"</i>; leave <b>From</b> blank to mean <i>"After To"</i>. Existing reports keep their original slots even if presets change later.</p>
     </div>
     <a class="btn btn-secondary" href="/production/processes?company={{ company }}">← Back to Process Configuration</a>
   </div>
 </div>
 
-{% for sh in shift_options %}
-{% set slots = shifts.get(sh, []) %}
-<div class="sp-section" id="sec-{{ sh }}">
+<div class="sp-section">
   <div class="sp-head">
-    <h2>Shift {{ sh }}</h2>
-    <div style="display:flex; gap:10px; align-items:center;">
-      <span class="muted" style="font-size:.85rem;">{{ slots|length }} slot{{ '' if slots|length == 1 else 's' }}</span>
-      <form method="post" action="/production/shift-presets/{{ sh }}/reset" style="margin:0;"
-            onsubmit="return confirm('Reset Shift {{ sh }} to the built-in defaults? Your edits are lost. Existing DPR reports are unaffected.');">
-        <input type="hidden" name="company" value="{{ company }}">
-        <button class="sp-mini-btn danger" type="submit">Reset to defaults</button>
-      </form>
-    </div>
+    <h2>Manage shifts</h2>
+    <span class="muted" style="font-size:.85rem;">{{ shift_rows|length }} shift{{ '' if shift_rows|length == 1 else 's' }}</span>
   </div>
 
-  {% if slots %}
-  <table class="sp-table">
-    <thead>
-      <tr>
-        <th style="width:80px;"></th>
-        <th>Label (shown on DPR)</th>
-        <th>Key</th>
-        <th style="text-align:right; width:120px;">Actions</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for slot in slots %}
-      <tr>
-        <td>
-          <form method="post" action="/production/shift-presets/{{ sh }}/{{ slot.id }}/move" style="display:inline;">
-            <input type="hidden" name="company" value="{{ company }}">
-            <input type="hidden" name="dir" value="up">
-            <button class="sp-mini-btn" type="submit" title="Move up" {% if loop.first %}disabled{% endif %}>↑</button>
-          </form>
-          <form method="post" action="/production/shift-presets/{{ sh }}/{{ slot.id }}/move" style="display:inline;">
-            <input type="hidden" name="company" value="{{ company }}">
-            <input type="hidden" name="dir" value="down">
-            <button class="sp-mini-btn" type="submit" title="Move down" {% if loop.last %}disabled{% endif %}>↓</button>
-          </form>
-        </td>
-        <td>
-          <form method="post" action="/production/shift-presets/{{ sh }}/{{ slot.id }}/edit" style="display:flex; gap:6px; align-items:center; margin:0;">
-            <input type="hidden" name="company" value="{{ company }}">
-            <input type="text" name="label" value="{{ slot.label }}" required style="padding:4px 8px; font-size:.88rem; max-width:160px;">
-            <button class="sp-mini-btn" type="submit">Save</button>
-          </form>
-        </td>
-        <td><span class="sp-key">{{ slot.key }}</span></td>
-        <td style="text-align:right;">
-          <form method="post" action="/production/shift-presets/{{ sh }}/{{ slot.id }}/delete" style="display:inline;"
-                onsubmit="return confirm('Delete slot &quot;{{ slot.label }}&quot;?');">
-            <input type="hidden" name="company" value="{{ company }}">
-            <button class="sp-mini-btn danger" type="submit">Delete</button>
-          </form>
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  {% endif %}
+  {# Hidden per-row move/delete forms — referenced from inside the save-all
+     form via the HTML5 form="..." attribute, so the actions stay isolated. #}
+  {% for sr in shift_rows %}
+    <form id="shmu-{{ sr.key }}" method="post" action="/production/shifts/{{ sr.key }}/move" style="display:none;">
+      <input type="hidden" name="company" value="{{ company }}"><input type="hidden" name="dir" value="up">
+    </form>
+    <form id="shmd-{{ sr.key }}" method="post" action="/production/shifts/{{ sr.key }}/move" style="display:none;">
+      <input type="hidden" name="company" value="{{ company }}"><input type="hidden" name="dir" value="down">
+    </form>
+    <form id="shdel-{{ sr.key }}" method="post" action="/production/shifts/{{ sr.key }}/delete" style="display:none;"
+          onsubmit="return confirm('Delete shift &quot;{{ sr.name }}&quot;? Its hour presets are deleted too. Existing DPR reports are not touched.');">
+      <input type="hidden" name="company" value="{{ company }}">
+    </form>
+  {% endfor %}
 
-  <form method="post" action="/production/shift-presets/{{ sh }}/add" class="sp-add-form">
+  <form id="shifts-save-all" method="post" action="/production/shifts/save-all">
     <input type="hidden" name="company" value="{{ company }}">
-    <label>New slot label
-      <input type="text" name="label" placeholder="e.g. 8 or OT" required>
+    <table class="sp-table">
+      <thead>
+        <tr>
+          <th style="width:80px;"></th>
+          <th>Display name</th>
+          <th>Key (immutable)</th>
+          <th>Reports using it</th>
+          <th style="text-align:right; width:120px;">Delete</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for sr in shift_rows %}
+        <tr>
+          <td>
+            <button class="sp-mini-btn" type="submit" form="shmu-{{ sr.key }}" title="Move up" {% if loop.first %}disabled{% endif %}>↑</button>
+            <button class="sp-mini-btn" type="submit" form="shmd-{{ sr.key }}" title="Move down" {% if loop.last %}disabled{% endif %}>↓</button>
+          </td>
+          <td>
+            <input type="hidden" name="shift_key" value="{{ sr.key }}" form="shifts-save-all">
+            <input type="text" name="shift_name" value="{{ sr.name }}" required form="shifts-save-all"
+                   style="padding:4px 8px; font-size:.88rem; max-width:240px;">
+          </td>
+          <td><span class="sp-key">{{ sr.key }}</span></td>
+          <td>{{ shift_usage.get(sr.key, 0) }}</td>
+          <td style="text-align:right;">
+            <button class="sp-mini-btn danger" type="submit" form="shdel-{{ sr.key }}"
+                    {% if shift_usage.get(sr.key, 0) > 0 %}disabled title="Reports already use this shift — rename instead"{% endif %}>
+              Delete
+            </button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div style="display:flex; justify-content:flex-end; padding:10px 14px; background:#f9fafb; border:1px solid var(--line); border-top:none;">
+      <button type="submit" class="btn">Save shifts</button>
+    </div>
+  </form>
+
+  <form method="post" action="/production/shifts/add" class="sp-add-form">
+    <input type="hidden" name="company" value="{{ company }}">
+    <label>Add a new shift
+      <input type="text" name="name" placeholder="e.g. Morning, S4, Night" required style="min-width:220px;">
     </label>
-    <button type="submit">+ Add slot</button>
+    <button type="submit">+ Add shift</button>
+    <span class="sp-hint">Key is auto-derived from the name and stays stable when you rename.</span>
   </form>
 </div>
+
+<div class="sp-toolbar">
+  <button type="button" class="sp-mini-btn" onclick="setAllShifts(true)">Expand all shifts</button>
+  <button type="button" class="sp-mini-btn" onclick="setAllShifts(false)">Collapse all shifts</button>
+</div>
+
+{% for sr in shift_rows %}
+{% set sh = sr.key %}
+{% set slots = shifts.get(sh, []) %}
+
+{# Reset form lives outside the summary so the summary can host a plain
+   button via the HTML5 form="..." attribute (forms can't sit in a summary). #}
+<form id="reset-{{ sh }}" method="post" action="/production/shift-presets/{{ sh }}/reset" style="display:none;"
+      onsubmit="if (!confirm('Reset {{ sr.name }} to the built-in defaults? Your edits are lost. Existing DPR reports are unaffected.')) return false; return preserveAndSubmit(this);">
+  <input type="hidden" name="company" value="{{ company }}">
+</form>
+
+<details class="sp-section" id="sec-{{ sh }}">
+  <summary class="sp-head">
+    <h2><span class="sp-disclose">▾</span>{{ sr.name }} <span class="sp-key" style="margin-left:6px;">{{ sh }}</span></h2>
+    <div style="display:flex; gap:10px; align-items:center;">
+      <span class="muted" style="font-size:.85rem;">{{ slots|length }} slot{{ '' if slots|length == 1 else 's' }}</span>
+      <button class="sp-mini-btn danger" type="submit" form="reset-{{ sh }}"
+              onclick="event.stopPropagation();">Reset to defaults</button>
+    </div>
+  </summary>
+
+  {% if slots %}
+  {# Per-row move/delete forms live OUTSIDE the save-all form (forms can't
+     nest). Buttons in the table reach them via the HTML5 form="..." attr. #}
+  {% for slot in slots %}
+    <form id="mu-{{ slot.id }}" method="post" action="/production/shift-presets/{{ sh }}/{{ slot.id }}/move" style="display:none;"
+          onsubmit="return preserveAndSubmit(this);">
+      <input type="hidden" name="company" value="{{ company }}"><input type="hidden" name="dir" value="up">
+    </form>
+    <form id="md-{{ slot.id }}" method="post" action="/production/shift-presets/{{ sh }}/{{ slot.id }}/move" style="display:none;"
+          onsubmit="return preserveAndSubmit(this);">
+      <input type="hidden" name="company" value="{{ company }}"><input type="hidden" name="dir" value="down">
+    </form>
+    <form id="del-{{ slot.id }}" method="post" action="/production/shift-presets/{{ sh }}/{{ slot.id }}/delete" style="display:none;"
+          onsubmit="if (!confirm('Delete slot &quot;{{ slot.label }}&quot;?')) return false; return preserveAndSubmit(this);">
+      <input type="hidden" name="company" value="{{ company }}">
+    </form>
+  {% endfor %}
+
+  <form id="sa-{{ sh }}" method="post" action="/production/shift-presets/{{ sh }}/save-all">
+    <input type="hidden" name="company" value="{{ company }}">
+    <table class="sp-table">
+      <thead>
+        <tr>
+          <th style="width:80px;"></th>
+          <th>From → To</th>
+          <th>Preview (DPR header)</th>
+          <th>Key</th>
+          <th style="text-align:right; width:120px;">Delete</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for slot in slots %}
+        <tr data-shift="{{ sh }}" data-row-index="{{ loop.index0 }}">
+          <td>
+            <button class="sp-mini-btn" type="submit" form="mu-{{ slot.id }}" title="Move up" {% if loop.first %}disabled{% endif %}>↑</button>
+            <button class="sp-mini-btn" type="submit" form="md-{{ slot.id }}" title="Move down" {% if loop.last %}disabled{% endif %}>↓</button>
+          </td>
+          <td>
+            <div class="sp-edit-form">
+              <input type="hidden" name="slot_id" value="{{ slot.id }}" form="sa-{{ sh }}">
+              <button type="button" class="sp-bump sp-link-btn" title="Link to previous row's To"
+                      onclick="pullPrevTo(this)" {% if loop.first %}disabled{% endif %}
+                      aria-label="Use previous To as From">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.5 1.5"></path>
+                  <path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.5-1.5"></path>
+                </svg>
+              </button>
+              <input type="time" name="from_time" value="{{ slot.from_time or '' }}" form="sa-{{ sh }}">
+              <button type="button" class="sp-bump" title="Set To = From + 1h" onclick="bumpTo(this)">+1h →</button>
+              <span class="sep">to</span>
+              <input type="time" name="to_time" value="{{ slot.to_time or '' }}" form="sa-{{ sh }}">
+            </div>
+          </td>
+          <td><span class="sp-preview">{{ slot.label }}</span></td>
+          <td><span class="sp-key">{{ slot.key }}</span></td>
+          <td style="text-align:right;">
+            <button class="sp-mini-btn danger" type="submit" form="del-{{ slot.id }}">Delete</button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div style="display:flex; justify-content:flex-end; padding:10px 14px; background:#f9fafb; border:1px solid var(--line); border-top:none;">
+      <button type="submit" class="btn">Save all rows</button>
+    </div>
+  </form>
+  {% endif %}
+
+  <form method="post" action="/production/shift-presets/{{ sh }}/add" class="sp-add-form"
+        data-shift="{{ sh }}" data-row-index="{{ slots|length }}"
+        onsubmit="return preserveAndSubmit(this);">
+    <input type="hidden" name="company" value="{{ company }}">
+    <label>From
+      <div class="sp-from-cell">
+        <button type="button" class="sp-bump sp-link-btn" title="Link to last row's To"
+                onclick="pullPrevTo(this)" {% if not slots %}disabled{% endif %}
+                aria-label="Use last row's To as From">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.5 1.5"></path>
+            <path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.5-1.5"></path>
+          </svg>
+        </button>
+        <input type="time" name="from_time">
+        <button type="button" class="sp-bump" title="Set To = From + 1h" onclick="bumpTo(this)">+1h →</button>
+      </div>
+    </label>
+    <label>To
+      <input type="time" name="to_time">
+    </label>
+    <span class="sp-hint">Blank To ⇒ <i>"Before From"</i> &nbsp;·&nbsp; Blank From ⇒ <i>"After To"</i></span>
+    <button type="submit">+ Add slot</button>
+  </form>
+</details>
 {% endfor %}
+
+<script>
+  // Find the row scope for a button: the enclosing <tr> for the table rows,
+  // or the <form.sp-add-form> for the bottom add-slot block. Both carry
+  // data-shift + data-row-index so we can locate siblings.
+  function rowScope(btn) {
+    return btn.closest('[data-row-index]');
+  }
+
+  // Pull the previous row's *live* To value (whatever is currently in its
+  // input — saved or not) into this row's From input.
+  function pullPrevTo(btn) {
+    var row = rowScope(btn);
+    if (!row) return;
+    var shift = row.dataset.shift;
+    var idx = parseInt(row.dataset.rowIndex, 10);
+    if (!shift || isNaN(idx) || idx <= 0) return;
+    var prevRow = document.querySelector(
+      '[data-shift="' + shift + '"][data-row-index="' + (idx - 1) + '"]'
+    );
+    if (!prevRow) return;
+    var prevTo = prevRow.querySelector('input[type="time"][name="to_time"]');
+    var fromInput = row.querySelector('input[type="time"][name="from_time"]');
+    if (prevTo && fromInput && prevTo.value) fromInput.value = prevTo.value;
+  }
+
+  function setAllShifts(open) {
+    document.querySelectorAll('details.sp-section').forEach(function (d) {
+      d.open = !!open;
+    });
+  }
+
+  // Before any destructive action (delete / move / reset / add slot / etc.)
+  // POSTs each shift's save-all form so pending From/To edits aren't lost
+  // when the server redirects and reloads the page.
+  // Usage: `<form ... onsubmit="return preserveAndSubmit(this);">`
+  // Returns false to cancel the current submit; resubmits programmatically
+  // once every save-all fetch resolves.
+  function preserveAndSubmit(form) {
+    var saveForms = document.querySelectorAll('form[id^="sa-"]');
+    if (!saveForms.length) return true;  // nothing to preserve, proceed
+    var promises = [];
+    saveForms.forEach(function (f) {
+      var fd = new FormData(f);
+      promises.push(fetch(f.action, {
+        method: 'POST',
+        body: new URLSearchParams(fd),
+        credentials: 'same-origin',
+        redirect: 'manual',  // don't follow the 303; we just need the write
+      }).catch(function () { /* swallow — proceed regardless */ }));
+    });
+    Promise.all(promises).then(function () {
+      // submit() bypasses the onsubmit handler, avoiding recursion.
+      form.submit();
+    });
+    return false;
+  }
+
+  function bumpTo(btn) {
+    var row = rowScope(btn);
+    if (!row) return;
+    var fromInput = row.querySelector('input[type="time"][name="from_time"]');
+    var toInput = row.querySelector('input[type="time"][name="to_time"]');
+    if (!fromInput || !toInput) return;
+    if (!fromInput.value) { fromInput.focus(); return; }
+    var parts = fromInput.value.split(':');
+    if (parts.length !== 2) return;
+    var h = (parseInt(parts[0], 10) + 1) % 24;
+    toInput.value = (h < 10 ? '0' + h : '' + h) + ':' + parts[1];
+  }
+</script>
 {% endblock %}

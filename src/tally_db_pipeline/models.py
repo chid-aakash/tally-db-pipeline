@@ -311,7 +311,7 @@ class SJPolicyGroup(Base):
 
 
 class ProductionEntry(Base):
-    __tablename__ = "production_entries"
+    __tablename__ = "consumption_entries"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     remote_id: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
@@ -334,10 +334,10 @@ class ProductionEntry(Base):
 
 
 class ProductionEntryLine(Base):
-    __tablename__ = "production_entry_lines"
+    __tablename__ = "consumption_entry_lines"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    entry_id: Mapped[int] = mapped_column(ForeignKey("production_entries.id"), nullable=False)
+    entry_id: Mapped[int] = mapped_column(ForeignKey("consumption_entries.id"), nullable=False)
     role: Mapped[str] = mapped_column(String(20), nullable=False)  # 'consume' | 'produce'
     item_name: Mapped[str] = mapped_column(String(255), nullable=False)
     quantity: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
@@ -467,6 +467,26 @@ class ProductionProcess(Base):
     )
 
 
+class Shift(Base):
+    """A user-defined shift per company (e.g. S1/S2/S3, or MORNING/NIGHT).
+    `key` is the immutable slug stored on every DPR report row — once a report
+    references it, the key cannot be renamed (the display `name` can). Auto-
+    seeded from `daily_report.SHIFT_OPTIONS` on first use per company."""
+
+    __tablename__ = "shifts"
+    __table_args__ = (UniqueConstraint("company_name", "key", name="uq_shift_company_key"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    key: Mapped[str] = mapped_column(String(20), nullable=False)
+    name: Mapped[str] = mapped_column(String(40), nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+
+
 class ShiftPresetSlot(Base):
     """One hour-column in a shift preset (per company, per shift S1/S2/S3).
     `key` is an immutable slug used as the DPR cell `hour_key`. Auto-seeded
@@ -482,6 +502,10 @@ class ShiftPresetSlot(Base):
     shift: Mapped[str] = mapped_column(String(10), nullable=False)
     key: Mapped[str] = mapped_column(String(20), nullable=False)
     label: Mapped[str] = mapped_column(String(40), nullable=False)
+    # "HH:MM" (24h). Either side may be blank: from-only ⇒ "Before HH:MM",
+    # to-only ⇒ "After HH:MM", both ⇒ "HH:MM - HH:MM".
+    from_time: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    to_time: Mapped[str | None] = mapped_column(String(5), nullable=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
@@ -646,3 +670,15 @@ class DPRIdleEvent(Base):
     remarks: Mapped[str | None] = mapped_column(String(500))
 
     report: Mapped["DailyProductionReport"] = relationship(back_populates="idle_events")
+
+
+class CompanyAlias(Base):
+    """Short codes (e.g. AAPL, SEPL) → full Tally company name. Used by the
+    consumable-import flow to map the spreadsheet's Company column to a
+    company_name in the local DB."""
+
+    __tablename__ = "company_aliases"
+
+    code: Mapped[str] = mapped_column(String(50), primary_key=True)
+    company_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)

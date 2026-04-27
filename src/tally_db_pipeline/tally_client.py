@@ -724,6 +724,11 @@ class TallyClient:
         is_deemed_positive = entry.get("is_deemed_positive")
         if is_deemed_positive is None:
             is_deemed_positive = direction == "in"
+        # Enforce sign convention so callers can pass positive amounts: IN
+        # entries render correctly only when AMOUNT is negative (Tally
+        # otherwise prefixes the value with "(-)" in the destination column).
+        if amount is not None and direction == "in":
+            amount = -abs(float(amount))
         rate = entry.get("rate")
         rate_str = f"{float(rate):.2f}/{uom}" if rate is not None and float(rate) != 0 else ""
 

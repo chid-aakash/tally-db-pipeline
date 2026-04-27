@@ -238,16 +238,68 @@
 
     var box = document.getElementById("tree-box");
     if (!box) return;
+
+    // Refresh a group checkbox to mirror its descendants:
+    //   all descendants checked  -> checked, not indeterminate
+    //   some descendants checked -> unchecked, indeterminate (won't submit)
+    //   none checked             -> unchecked, not indeterminate
+    function refreshGroup(node) {
+      var cb = node.querySelector(":scope > .node-label > .group-cb");
+      if (!cb) return;
+      var descendants = node.querySelectorAll('.tree-children input[type="checkbox"]');
+      if (!descendants.length) {
+        cb.indeterminate = false;
+        return;
+      }
+      var checked = 0;
+      descendants.forEach(function (d) { if (d.checked) checked++; });
+      if (checked === 0) {
+        cb.checked = false;
+        cb.indeterminate = false;
+      } else if (checked === descendants.length) {
+        cb.checked = true;
+        cb.indeterminate = false;
+      } else {
+        cb.checked = false;
+        cb.indeterminate = true;
+      }
+    }
+
+    function refreshAncestors(el) {
+      var n = el.closest(".tree-node");
+      while (n) {
+        refreshGroup(n);
+        n = n.parentElement ? n.parentElement.closest(".tree-node") : null;
+      }
+    }
+
     box.addEventListener("change", function (e) {
       var t = e.target;
       if (!t || t.tagName !== "INPUT" || t.type !== "checkbox") return;
-      if (!t.classList.contains("group-cb")) return;
-      var scope = t.closest(".tree-node");
-      if (!scope) return;
-      scope.querySelectorAll('.tree-children input[type="checkbox"]').forEach(function (cb) {
-        cb.checked = t.checked;
-      });
+      if (t.classList.contains("group-cb")) {
+        var scope = t.closest(".tree-node");
+        if (!scope) return;
+        // Group toggled directly: cascade to descendants.
+        scope.querySelectorAll('.tree-children input[type="checkbox"]').forEach(function (cb) {
+          cb.checked = t.checked;
+          cb.indeterminate = false;
+        });
+        t.indeterminate = false;
+        // Then walk further up so ancestors reflect the new state.
+        var parent = scope.parentElement ? scope.parentElement.closest(".tree-node") : null;
+        while (parent) {
+          refreshGroup(parent);
+          parent = parent.parentElement ? parent.parentElement.closest(".tree-node") : null;
+        }
+      } else if (t.classList.contains("item-cb")) {
+        refreshAncestors(t);
+      }
     });
+
+    // Initial sync: derive each group's state from the children that the
+    // server pre-checked, so loading with a partial selection shows the right
+    // indeterminate ticks (and won't re-submit the parent unless fully filled).
+    box.querySelectorAll(".tree-node").forEach(refreshGroup);
     box.addEventListener("click", function (e) {
       if (e.target && e.target.tagName === "INPUT" && e.target.type === "checkbox") {
         e.stopPropagation();
@@ -269,7 +321,11 @@
   {% if not configure %}
   {% set dates = pivot.dates %}
   {% set date_headers = pivot.date_headers %}
-  <div style="margin-top:14px; overflow:auto; border:1px solid var(--line); border-radius:10px; background:#fff;">
+  <div class="export-bar" style="margin-top:14px;">
+    <button type="button" id="expand-all-groups">⊕ Expand all groups</button>
+    <button type="button" id="collapse-all-groups">⊖ Collapse all groups</button>
+  </div>
+  <div style="margin-top:10px; overflow:auto; border:1px solid var(--line); border-radius:10px; background:#fff;">
     <table class="pivot">
       <thead>
         <tr>
@@ -300,9 +356,9 @@
             <td>—</td>
             {% for h in date_headers %}
               {% set v = row.subtotal_by_date.get(h.iso, 0) %}
-              <td class="num {% if h.is_sunday %}sun{% endif %}">{{ ('%.2f' % v) if v else '-' }}</td>
+              <td class="num {% if h.is_sunday %}sun{% endif %}">{{ (v|inum) if v else '-' }}</td>
             {% endfor %}
-            <td class="num">{{ '%.2f' % row.subtotal }}</td>
+            <td class="num">{{ row.subtotal|inum }}</td>
           </tr>
           {% else %}
           <tr data-row-id="{{ row.id }}" data-ancestors="{{ row.ancestors|join(',') }}" data-depth="{{ row.depth }}">
@@ -310,9 +366,9 @@
             <td style="color:var(--muted);">{{ row.uom }}</td>
             {% for h in date_headers %}
               {% set v = row.by_date.get(h.iso, 0) %}
-              <td class="num {% if h.is_sunday %}sun{% endif %}">{{ ('%.2f' % v) if v else '' }}</td>
+              <td class="num {% if h.is_sunday %}sun{% endif %}">{{ (v|inum) if v else '' }}</td>
             {% endfor %}
-            <td class="num" style="font-weight:600;">{{ ('%.2f' % row.total) if row.total else '-' }}</td>
+            <td class="num" style="font-weight:600;">{{ (row.total|inum) if row.total else '-' }}</td>
           </tr>
           {% endif %}
         {% else %}
@@ -334,18 +390,13 @@
           <td></td>
           {% for h in date_headers %}
             {% set v = pivot.column_totals.get(h.iso, 0) %}
-            <td class="num {% if h.is_sunday %}sun{% endif %}">{{ ('%.2f' % v) if v else '-' }}</td>
+            <td class="num {% if h.is_sunday %}sun{% endif %}">{{ (v|inum) if v else '-' }}</td>
           {% endfor %}
-          <td class="num">{{ '%.2f' % pivot.grand_total }}</td>
+          <td class="num">{{ pivot.grand_total|inum }}</td>
         </tr>
       </tfoot>
       {% endif %}
     </table>
-  </div>
-
-  <div class="export-bar" style="margin-top:10px;">
-    <button type="button" id="expand-all-groups">⊕ Expand all groups</button>
-    <button type="button" id="collapse-all-groups">⊖ Collapse all groups</button>
   </div>
 
   <script>

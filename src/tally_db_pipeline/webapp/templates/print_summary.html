@@ -198,7 +198,7 @@
 
     <div class="meta-row">
       <div>Date: <b>{{ summary_date|nice_date }}</b></div>
-      <div>Company: <b>{{ co.name }}</b></div>
+      <div>Company: <b>{{ co.name|co_short }}</b></div>
       <div>Posted vouchers: <b>{{ co.voucher_count }}</b></div>
       <div>Consumed value: <b>{{ co.subtotal|inr }}</b></div>
     </div>
@@ -250,7 +250,7 @@
     <table style="margin-top:14px">
       <tfoot>
         <tr>
-          <td style="text-align:right">COMPANY TOTAL — {{ co.name }}</td>
+          <td style="text-align:right">COMPANY TOTAL — {{ co.name|co_short }}</td>
           <td class="num" style="width:140px">{{ co.subtotal|inr }}</td>
         </tr>
       </tfoot>

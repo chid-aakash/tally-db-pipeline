@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% block brand_title %}Tally <span class="accent">Production</span>{% endblock %}
 {% block title %}Edit Daily Production Report — {{ report.report_date|dmy }} {{ report.shift }} L{{ report.line }}{% endblock %}
 
 {% block content %}
@@ -106,6 +107,18 @@
     </form>
   </div>
 </div>
+{% set _ve = request.query_params.get('validation_error') %}
+{% if _ve %}
+<div style="background:#fef2f2; border:1px solid #fecaca; color:#991b1b; padding:12px 16px; border-radius:10px; margin-bottom:14px;">
+  <div style="font-weight:700; margin-bottom:6px;">⚠️ Cannot mark ready — rejection allocation does not match production counts.</div>
+  <div style="font-size:.85rem; margin-bottom:6px;">Fix the hours below (input − output must equal the sum of that stage's rejection cells), then try again. The report is still saved as a draft.</div>
+  <ul style="margin:6px 0 0 18px; padding:0; font-size:.88rem;">
+    {% for line in _ve.split('\n') if line.strip() %}
+      <li style="margin:2px 0;">{{ line }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
 <form method="post" action="/production/daily-report/{{ report.id }}/save" id="dpr-form">
   {# --- Sticky meta bar + live KPIs --- #}
   <div class="dpr-meta">

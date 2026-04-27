@@ -201,6 +201,7 @@ class VoucherBuildResult:
     plain_scrap_kg: float
     circle_scrap_kg: float
     per_model: list[ModelDayTotals]
+    narration_detail: str = ""
     skipped_missing_stock: list[dict] = field(default_factory=list)
     # Each entry: {"model": str, "missing": "blank" | "drilled" | "both"}
 
@@ -304,7 +305,7 @@ def build_sj_line_voucher(
             "uom": "Kg",
             "godown": SCRAP_GODOWN,
             "rate": scrap_rate,
-            "amount": -round(plain_scrap_kg * scrap_rate, 2),
+            "amount": round(plain_scrap_kg * scrap_rate, 2),
             "direction": "in",
         })
     if circle_scrap_kg > 0:
@@ -314,18 +315,21 @@ def build_sj_line_voucher(
             "uom": "Kg",
             "godown": SCRAP_GODOWN,
             "rate": scrap_rate,
-            "amount": -round(circle_scrap_kg * scrap_rate, 2),
+            "amount": round(circle_scrap_kg * scrap_rate, 2),
             "direction": "in",
         })
 
-    narration_lines = [
+    # Detailed multi-line narration for the on-screen preview only — Tally's
+    # voucher view shows the narration as a single squished line, so the long
+    # form is unreadable there.
+    detail_lines = [
         f"SJ - LINE consolidated for {report_date} ({len(per_model)} model(s)).",
         "",
         "Per-model breakdown (Input - Rejection = Drilled):",
     ]
     if skipped_missing:
         parts = [f"{e['model']} ({e['missing']} missing)" for e in skipped_missing]
-        narration_lines.append(
+        detail_lines.append(
             f"Skipped {len(skipped_missing)} model(s) — BLANK / DRILLED stock item not found in Tally: "
             + ", ".join(sorted(parts))
         )
@@ -334,7 +338,7 @@ def build_sj_line_voucher(
             continue
         spec = specs.get(t.model)
         if spec is None:
-            narration_lines.append(
+            detail_lines.append(
                 f"  {t.model}: in {t.input_qty:g} - rej {t.rejection_qty:g} = drilled {t.drilled_qty:g}; spec missing, no scrap"
             )
             continue
@@ -345,21 +349,48 @@ def build_sj_line_voucher(
         hole_desc = ", ".join(
             f"{h.count}×Ø{h.diameter_mm:g}" for h in sorted(spec.holes, key=lambda h: -h.diameter_mm)
         ) or "no holes"
-        narration_lines.append(
+        detail_lines.append(
             f"  {t.model} ({spec.length_mm:g}x{spec.width_mm:g}x{spec.thickness_mm:g}mm, {hole_desc}): "
             f"in {t.input_qty:g} - rej {t.rejection_qty:g} = drilled {t.drilled_qty:g}; "
             f"plain {wpb:.3f}kg/blank x {t.rejection_qty:g} = {plain:.2f}kg; "
             f"cullet {cpd:.4f}kg/pc x {t.drilled_qty:g} = {cullet:.2f}kg"
         )
-    narration_lines.append("")
-    narration_lines.append(
+    detail_lines.append("")
+    detail_lines.append(
         f"Total scrap: PLAIN {plain_scrap_kg:.2f}kg + CULLET {circle_scrap_kg:.2f}kg @ Rs.{scrap_rate:g}/kg "
         f"(density 2.5 g/cc, formulas L*W*T*2.5e-6 and pi*r^2*T*count*2.5e-6)."
     )
+    narration_detail = "\n".join(detail_lines)
+
+    # Compact narration for Tally — one short summary line per model, then
+    # totals. Tally's narration band can comfortably show this without the
+    # text running off-screen.
+    model_summaries = []
+    total_input = 0.0
+    total_drilled = 0.0
+    for t in per_model:
+        if t.model in skipped_models:
+            continue
+        total_input += t.input_qty
+        total_drilled += t.drilled_qty
+        model_summaries.append(
+            f"{t.model} {t.input_qty:g}->{t.drilled_qty:g} (rej {t.rejection_qty:g})"
+        )
+    short_lines = [f"SJ-LINE {report_date} | {len(model_summaries)} model(s)"]
+    short_lines.extend(model_summaries)
+    short_lines.append(
+        f"Totals: input {total_input:g}, drilled {total_drilled:g}, "
+        f"scrap PLAIN {plain_scrap_kg:.2f}kg + CULLET {circle_scrap_kg:.2f}kg @ Rs.{scrap_rate:g}/kg"
+    )
+    if skipped_missing:
+        skip_parts = sorted(f"{e['model']} ({e['missing']})" for e in skipped_missing)
+        short_lines.append(f"Skipped: {', '.join(skip_parts)}")
+    narration_short = "\n".join(short_lines)
+
     voucher = {
         "voucher_type": VOUCHER_TYPE,
         "date": report_date,
-        "narration": "\n".join(narration_lines),
+        "narration": narration_short,
         "remote_id": remote_id or f"sjline-{company}-{report_date}".replace(" ", "_"),
         "inventory_entries": inventory,
         "objview": "Consumption Voucher View",
@@ -370,5 +401,6 @@ def build_sj_line_voucher(
         plain_scrap_kg=plain_scrap_kg,
         circle_scrap_kg=circle_scrap_kg,
         per_model=per_model,
+        narration_detail=narration_detail,
         skipped_missing_stock=sorted(skipped_missing, key=lambda e: e["model"]),
     )

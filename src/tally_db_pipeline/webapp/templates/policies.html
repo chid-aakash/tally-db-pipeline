@@ -1,30 +1,6 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-  <title>Consumable Policy — Tally Production Entry</title>
-  <link id="favicon" rel="icon" type="image/png" sizes="32x32" href="/static/logos/favicon_aapl_32.png">
-  <link id="favicon-large" rel="icon" type="image/png" sizes="180x180" href="/static/logos/favicon_aapl.png">
-  <link id="apple-icon" rel="apple-touch-icon" sizes="180x180" href="/static/logos/favicon_aapl.png">
-  <script>
-    (function () {
-      var small = ["/static/logos/favicon_aapl_32.png", "/static/logos/favicon_sepl_32.png"];
-      var large = ["/static/logos/favicon_aapl.png",    "/static/logos/favicon_sepl.png"];
-      var i = 0;
-      setInterval(function () {
-        i = (i + 1) % small.length;
-        var t = "?t=" + Date.now();
-        var s = document.getElementById("favicon");
-        var l = document.getElementById("favicon-large");
-        var a = document.getElementById("apple-icon");
-        if (s) s.href = small[i] + t;
-        if (l) l.href = large[i] + t;
-        if (a) a.href = large[i] + t;
-      }, 4000);
-    })();
-  </script>
+{% extends "base.html" %}
+{% block title %}Consumable Policy{% endblock %}
+{% block extra_head %}
   <style>
     :root {
       --navy-900:#0f1e45; --navy-800:#1e3a8a; --navy-700:#2743a8; --navy-50:#eef2ff;
@@ -181,7 +157,38 @@
     }
     .drawer-link:hover { background: rgba(255,255,255,.08); color: #fff; transform: translateX(2px); filter: none; box-shadow: none; }
     .drawer-link svg { width: 20px; height: 20px; flex: 0 0 20px; opacity: .9; }
+    .drawer-link .chev { margin-left: auto; opacity: .7; transition: transform var(--t-fast); width: 14px; height: 14px; flex: 0 0 14px; }
     .drawer-sep { height: 1px; background: rgba(255,255,255,.08); margin: 8px 16px; }
+    .drawer-group { position: relative; }
+    .drawer-flyout {
+      position: absolute; top: 0; left: 100%;
+      min-width: 260px;
+      background: linear-gradient(180deg, #0a163b, #15296b);
+      box-shadow: 12px 0 40px rgba(0,0,0,.45);
+      border-radius: 0 12px 12px 0;
+      padding: 8px 0;
+      opacity: 0; pointer-events: none;
+      transform: translateX(-6px);
+      transition: opacity var(--t-fast), transform var(--t-fast);
+      z-index: 102;
+    }
+    .drawer-group:hover > .drawer-flyout,
+    .drawer-group:focus-within > .drawer-flyout,
+    .drawer-group.open > .drawer-flyout {
+      opacity: 1; pointer-events: auto; transform: translateX(0);
+    }
+    .drawer-group:hover > .drawer-link .chev,
+    .drawer-group.open > .drawer-link .chev { transform: rotate(90deg); }
+    @media (max-width: 640px) {
+      .drawer-flyout {
+        position: static; box-shadow: none; border-radius: 0;
+        padding: 0 0 4px 24px; min-width: 0;
+        opacity: 1; pointer-events: auto; transform: none;
+        display: none;
+      }
+      .drawer-group:hover > .drawer-flyout,
+      .drawer-group.open > .drawer-flyout { display: block; }
+    }
 
     main {
       padding: 22px 20px 40px; max-width: 1400px; margin: 0 auto;
@@ -329,51 +336,8 @@
       *, *::before, *::after { animation: none !important; transition: none !important; }
     }
   </style>
-</head>
-<body>
-  <div class="bg-stage" aria-hidden="true">
-    <div class="blob b1"></div>
-    <div class="blob b2"></div>
-    <div class="blob b3"></div>
-  </div>
-  <header>
-    <div class="brand">
-      <button id="menu-btn" class="menu-btn" aria-label="Open menu" type="button">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
-      </button>
-      <span class="brand-logo" aria-hidden="true">
-        <span class="face a"></span>
-        <span class="face b"></span>
-      </span>
-      Tally Production Entry
-    </div>
-  </header>
-  <div id="drawer-overlay" class="drawer-overlay" aria-hidden="true"></div>
-  <aside id="drawer" class="drawer" role="dialog" aria-label="Main menu">
-    <div class="drawer-head">
-      <span class="drawer-logo" aria-hidden="true">
-        <span class="face a"></span>
-        <span class="face b"></span>
-      </span>
-      <button id="drawer-close" class="drawer-close" aria-label="Close menu">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
-      </button>
-    </div>
-    <a class="drawer-link" href="/app">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5z"/><path d="M14 3v5h5M12 12v6M9 15h6"/></svg>
-      <span>New entry</span>
-    </a>
-    <a class="drawer-link" href="/entries">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="4" cy="6" r="1.4"/><circle cx="4" cy="12" r="1.4"/><circle cx="4" cy="18" r="1.4"/></svg>
-      <span>All entries</span>
-    </a>
-    <div class="drawer-sep"></div>
-    <a class="drawer-link" href="/policies">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 4v6c0 5-3.5 9.5-8 10-4.5-.5-8-5-8-10V6l8-4z"/><path d="M9 12l2 2 4-4"/></svg>
-      <span>Policies</span>
-    </a>
-  </aside>
-  <main>
+{% endblock %}
+{% block content %}
     <h1>Consumable Policy — Voucher Type — Stock Mapping</h1>
 
     <div class="card">
@@ -440,8 +404,8 @@
         </div>
       </div>
     </div>
-  </main>
-
+{% endblock %}
+{% block extra_scripts %}
 <script>
 const $ = (id) => document.getElementById(id);
 let state = {
@@ -860,22 +824,6 @@ async function deletePolicy() {
   }
 }
 
-// Drawer wiring — bind immediately (independent of API fetch).
-(function wireDrawer() {
-  const mbtn = document.getElementById("menu-btn");
-  const drawer = document.getElementById("drawer");
-  const overlay = document.getElementById("drawer-overlay");
-  const dclose = document.getElementById("drawer-close");
-  if (!mbtn || !drawer || !overlay) return;
-  const open  = () => { drawer.classList.add("open"); overlay.classList.add("open"); document.body.style.overflow = "hidden"; };
-  const close = () => { drawer.classList.remove("open"); overlay.classList.remove("open"); document.body.style.overflow = ""; };
-  mbtn.addEventListener("click", open);
-  overlay.addEventListener("click", close);
-  if (dclose) dclose.addEventListener("click", close);
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
-})();
-
 init();
 </script>
-</body>
-</html>
+{% endblock %}
